@@ -64,6 +64,7 @@ def train(args):
         n_layers=args.n_layers,
         lam=args.lam,
         n_proj=args.n_proj,
+        ema_momentum=args.ema_momentum,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -111,6 +112,7 @@ def train(args):
             m["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            model.update_target()
             for k in sums:
                 sums[k] += m[k].item()
 
@@ -194,8 +196,10 @@ if __name__ == "__main__":
     parser.add_argument("--hidden-dim",   type=int,   default=512)
     parser.add_argument("--n-heads",      type=int,   default=4)
     parser.add_argument("--n-layers",     type=int,   default=4)
-    parser.add_argument("--lam",          type=float, default=0.1,
-                        help="poids SIGReg (seul hyperparamètre effectif)")
+    parser.add_argument("--lam",          type=float, default=0.5,
+                        help="poids SIGReg")
+    parser.add_argument("--ema-momentum", type=float, default=0.996,
+                        help="momentum EMA du target encoder (τ)")
     parser.add_argument("--n-proj",       type=int,   default=512,
                         help="projections SIGReg (robuste à ce choix)")
     parser.add_argument("--epochs",       type=int,   default=100)
