@@ -114,11 +114,20 @@ class LeWorldModel(nn.Module):
 
         self.mask_ratio = mask_ratio
 
-        self.encoder        = ContextEncoder(embed_dim)
+        self.encoder        = ContextEncoder(embed_dim, in_channels=6)
         self.target_encoder = TargetEncoder(self.encoder, momentum=ema_momentum)
         self.predictor      = CausalPredictor(embed_dim, hidden_dim,
                                               n_heads, n_layers, max_frames)
         self.mask_token     = nn.Parameter(torch.zeros(embed_dim))
+
+    # ── Frame stacking ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_pairs(frames: torch.Tensor) -> torch.Tensor:
+        """(B, T, 3, H, W) → (B, T, 6, H, W) : concat(frame_t, frame_t - frame_{t-1})"""
+        diff = torch.zeros_like(frames)
+        diff[:, 1:] = frames[:, 1:] - frames[:, :-1]
+        return torch.cat([frames, diff], dim=2)
 
     # ── Forward (entraînement) ───────────────────────────────────────────────
 
@@ -131,7 +140,8 @@ class LeWorldModel(nn.Module):
             dict : loss, pred_loss, sigreg (tous scalaires)
         """
         B, T, C, H, W = frames.shape
-        frames_flat = frames.reshape(B * T, C, H, W)
+        pairs = self._make_pairs(frames)               # (B, T, 6, H, W)
+        frames_flat = pairs.reshape(B * T, 6, H, W)
 
         # Encodeur online (gradient actif)
         z_ctx = self.encoder(frames_flat).view(B, T, self.embed_dim)         # (B, T, D)
@@ -189,7 +199,8 @@ class LeWorldModel(nn.Module):
             z : (B, T, embed_dim)
         """
         B, T, C, H, W = frames.shape
-        z = self.encoder(frames.reshape(B * T, C, H, W))
+        pairs = self._make_pairs(frames)
+        z = self.encoder(pairs.reshape(B * T, 6, H, W))
         return z.view(B, T, self.embed_dim)
 
     @torch.no_grad()

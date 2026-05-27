@@ -5,18 +5,19 @@ import torch.nn as nn
 
 class ContextEncoder(nn.Module):
     """
-    CNN déterministe : (B, 3, 64, 64) → embedding ∈ R^embed_dim.
+    CNN déterministe : (B, in_channels, 64, 64) → embedding ∈ R^embed_dim.
 
+    in_channels=6 pour le frame stacking : concat(frame_t, frame_t - frame_{t-1}).
     Pas de mu/log_var, pas de reparameterize — l'espace latent n'est
     pas contraint par un prior gaussien. Le gradient passe librement.
     """
 
-    def __init__(self, embed_dim: int = 256):
+    def __init__(self, embed_dim: int = 256, in_channels: int = 6):
         super().__init__()
         self.embed_dim = embed_dim
 
         self.conv = nn.Sequential(
-            nn.Conv2d(3,   32,  4, stride=2, padding=1),  # → (32, 32, 32)
+            nn.Conv2d(in_channels, 32,  4, stride=2, padding=1),  # → (32, 32, 32)
             nn.ReLU(),
             nn.Conv2d(32,  64,  4, stride=2, padding=1),  # → (64, 16, 16)
             nn.ReLU(),
@@ -28,7 +29,7 @@ class ContextEncoder(nn.Module):
         self.fc = nn.Linear(256 * 4 * 4, embed_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, 3, 64, 64) ou (B*T, 3, 64, 64) → (B, embed_dim)"""
+        """x: (B, in_channels, 64, 64) ou (B*T, in_channels, 64, 64) → (B, embed_dim)"""
         return self.fc(self.conv(x).flatten(1))
 
 

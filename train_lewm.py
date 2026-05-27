@@ -199,13 +199,13 @@ if __name__ == "__main__":
     parser.add_argument("--n-layers",     type=int,   default=4)
     parser.add_argument("--lam",          type=float, default=0.5,
                         help="poids SIGReg")
-    parser.add_argument("--ema-momentum", type=float, default=0.996,
+    parser.add_argument("--ema-momentum", type=float, default=0.99,
                         help="momentum EMA du target encoder (τ)")
     parser.add_argument("--mask-ratio",   type=float, default=0.4,
                         help="fraction des frames masquées pour la prédiction (style V-JEPA)")
     parser.add_argument("--n-proj",       type=int,   default=512,
                         help="projections SIGReg (robuste à ce choix)")
-    parser.add_argument("--epochs",       type=int,   default=100)
+    parser.add_argument("--epochs",       type=int,   default=50)
     parser.add_argument("--batch-size",   type=int,   default=16)
     parser.add_argument("--lr",           type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)

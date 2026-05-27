@@ -87,39 +87,67 @@ def collect_embeddings(model, loader, device):
     return np.concatenate(all_z), np.concatenate(all_s), seqs
 
 
-# ── 1. Linear probe ────────────────────────────────────────────────────────────
+# ── Utilitaire R² ──────────────────────────────────────────────────────────────
 
-def linear_probe(model, train_loader, val_loader, device, n_epochs=50):
-    print("\n── Linear probe ──────────────────────────────────────────")
-    Z_tr, S_tr, _ = collect_embeddings(model, train_loader, device)
-    Z_va, S_va, _ = collect_embeddings(model, val_loader,   device)
+def compute_r2s(preds: np.ndarray, targets: np.ndarray):
+    r2s = []
+    for i in range(4):
+        ss_res = ((targets[:, i] - preds[:, i]) ** 2).sum()
+        ss_tot = ((targets[:, i] - targets[:, i].mean()) ** 2).sum()
+        r2s.append(float(1 - ss_res / (ss_tot + 1e-8)))
+    return r2s
 
-    D    = Z_tr.shape[1]
-    Zt   = torch.from_numpy(Z_tr).float().to(device)
-    St   = torch.from_numpy(S_tr).float().to(device)
-    Zv   = torch.from_numpy(Z_va).float().to(device)
-    head = nn.Linear(D, 4).to(device)
-    opt  = optim.Adam(head.parameters(), lr=1e-3)
 
+def _run_probe(head, Zt, St, Zv, n_epochs, lr=1e-3):
+    opt = optim.Adam(head.parameters(), lr=lr)
     for _ in range(n_epochs):
         head.train(); opt.zero_grad()
         F.mse_loss(head(Zt), St).backward(); opt.step()
-
     head.eval()
     with torch.no_grad():
-        preds = head(Zv).cpu().numpy()
+        return head(Zv).cpu().numpy()
 
-    r2s = []
-    for i in range(4):
-        ss_res = ((S_va[:, i] - preds[:, i]) ** 2).sum()
-        ss_tot = ((S_va[:, i] - S_va[:, i].mean()) ** 2).sum()
-        r2s.append(float(1 - ss_res / (ss_tot + 1e-8)))
 
-    r2_global = float(np.mean(r2s))
-    for name, r2 in zip(STATE_NAMES, r2s):
-        print(f"  R²({name}) = {r2:.4f}")
-    print(f"  R² global  = {r2_global:.4f}")
-    return r2s, r2_global, preds, S_va
+# ── 1. Linear probe + MLP probe ────────────────────────────────────────────────
+
+def linear_probe(model, train_loader, val_loader, device, n_epochs=50):
+    print("\n── Linear probe  vs  MLP probe ──────────────────────────")
+    Z_tr, S_tr, _ = collect_embeddings(model, train_loader, device)
+    Z_va, S_va, _ = collect_embeddings(model, val_loader,   device)
+
+    D  = Z_tr.shape[1]
+    Zt = torch.from_numpy(Z_tr).float().to(device)
+    St = torch.from_numpy(S_tr).float().to(device)
+    Zv = torch.from_numpy(Z_va).float().to(device)
+
+    # Probe linéaire
+    lin_preds = _run_probe(nn.Linear(D, 4).to(device), Zt, St, Zv, n_epochs)
+    r2s_lin   = compute_r2s(lin_preds, S_va)
+
+    # Probe MLP 2 couches (D → 256 → 256 → 4)
+    mlp = nn.Sequential(
+        nn.Linear(D, 256), nn.ReLU(),
+        nn.Linear(256, 256), nn.ReLU(),
+        nn.Linear(256, 4),
+    ).to(device)
+    mlp_preds = _run_probe(mlp, Zt, St, Zv, n_epochs * 4, lr=3e-4)
+    r2s_mlp   = compute_r2s(mlp_preds, S_va)
+
+    r2_lin = float(np.mean(r2s_lin))
+    r2_mlp = float(np.mean(r2s_mlp))
+
+    print(f"  {'':6}  {'Linéaire':>10}  {'MLP':>10}")
+    for name, rl, rm in zip(STATE_NAMES, r2s_lin, r2s_mlp):
+        print(f"  R²({name})  {rl:>10.4f}  {rm:>10.4f}")
+    print(f"  {'global':6}  {r2_lin:>10.4f}  {r2_mlp:>10.4f}")
+
+    gap = r2_mlp - r2_lin
+    if gap > 0.05:
+        print(f"  → Info présente mais non-linéaire (gap = +{gap:.3f})")
+    else:
+        print(f"  → Peu de gain non-linéaire (gap = +{gap:.3f})")
+
+    return r2s_lin, r2_lin, lin_preds, S_va, r2s_mlp, r2_mlp
 
 
 # ── 2. Uniformité & Alignement ─────────────────────────────────────────────────
@@ -176,7 +204,7 @@ def prediction_horizon(model: LeWorldModel, val_loader, device,
 # ── Figure de synthèse ─────────────────────────────────────────────────────────
 
 def save_figure(r2s, r2_global, uniformity, alignment, horizon_sims,
-                preds, s_val, save_path):
+                preds, s_val, save_path, r2s_mlp=None, r2_mlp=None):
     fig = plt.figure(figsize=(15, 9), facecolor=DARK)
     gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.38)
 
@@ -185,19 +213,20 @@ def save_figure(r2s, r2_global, uniformity, alignment, horizon_sims,
         ax.tick_params(colors="white")
         for sp in ax.spines.values(): sp.set_edgecolor("#444")
 
-    # R² par dimension
+    # R² par dimension — linéaire vs MLP
     ax = fig.add_subplot(gs[0, 0]); style(ax)
     colors = ["#4fc3f7", "#ff8a65", "#a5d6a7", "#ce93d8"]
-    bars = ax.bar(STATE_NAMES, r2s, color=colors, alpha=0.85)
-    ax.axhline(1.0,       color="#555", lw=0.8, ls="--")
-    ax.axhline(r2_global, color="white", lw=1.2, ls="--",
-               label=f"global R²={r2_global:.3f}")
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_title("Linear probe — R² par état", color="white", fontsize=10)
-    ax.legend(fontsize=8, labelcolor="white", facecolor="#222", edgecolor="#444")
-    for bar, r2 in zip(bars, r2s):
-        ax.text(bar.get_x() + bar.get_width() / 2, max(r2 + 0.02, 0.05),
-                f"{r2:.3f}", ha="center", va="bottom", color="white", fontsize=8)
+    x = np.arange(len(STATE_NAMES))
+    w = 0.35
+    bars_lin = ax.bar(x - w/2, r2s,     width=w, color=colors, alpha=0.85, label=f"Linéaire R²={r2_global:.3f}")
+    if r2s_mlp:
+        bars_mlp = ax.bar(x + w/2, r2s_mlp, width=w, color=colors, alpha=0.45,
+                          hatch="//", label=f"MLP R²={r2_mlp:.3f}")
+    ax.axhline(1.0, color="#555", lw=0.8, ls="--")
+    ax.set_xticks(x); ax.set_xticklabels(STATE_NAMES)
+    ax.set_ylim(-0.1, max(1.1, (max(r2s_mlp) if r2s_mlp else 0) + 0.1))
+    ax.set_title("Probe R² par état", color="white", fontsize=10)
+    ax.legend(fontsize=7, labelcolor="white", facecolor="#222", edgecolor="#444")
 
     # Scatter θ₁
     ax2 = fig.add_subplot(gs[0, 1]); style(ax2)
@@ -244,10 +273,12 @@ def save_figure(r2s, r2_global, uniformity, alignment, horizon_sims,
     ax5.set_facecolor("#1a1a1a"); ax5.axis("off")
     grade     = lambda r: "✓ Bon" if r > 0.8 else ("~ Moyen" if r > 0.5 else "✗ Faible")
     grade_u   = lambda u: "✓ Bon" if u < -1.5 else ("~ Limite" if u < -0.5 else "✗ Collapse")
+    mlp_str   = f"{r2_mlp:.3f}  {grade(r2_mlp)}" if r2_mlp is not None else "—"
     lines = [
         ("SCORECARD",       "",                                          "white"),
         ("",                "",                                          "white"),
-        ("Linear probe R²", f"{r2_global:.3f}  {grade(r2_global)}",     "#a5d6a7"),
+        ("R² linéaire",     f"{r2_global:.3f}  {grade(r2_global)}",     "#a5d6a7"),
+        ("R² MLP",          mlp_str,                                     "#a5d6a7"),
         ("Uniformité",      f"{uniformity:.3f}  {grade_u(uniformity)}", "#4fc3f7"),
         ("Alignement",      f"{alignment:.3f}",                         "#ff8a65"),
         ("Pred. t+1",       f"{horizon_sims.get(1, float('nan')):.3f}", "#ce93d8"),
@@ -279,7 +310,7 @@ def main(args):
     train_loader, val_loader = make_loaders(args.dataset_dir)
     print(f"Train : {len(train_loader.dataset)} traj  |  Val : {len(val_loader.dataset)} traj")
 
-    r2s, r2_global, preds, s_val = linear_probe(
+    r2s, r2_global, preds, s_val, r2s_mlp, r2_mlp = linear_probe(
         model, train_loader, val_loader, device, n_epochs=args.probe_epochs)
     _, _, seqs_train = collect_embeddings(model, train_loader, device)
     _, _, seqs_val   = collect_embeddings(model, val_loader,   device)
@@ -287,12 +318,13 @@ def main(args):
     horizon_sims = prediction_horizon(model, val_loader, device, horizons=args.horizons)
 
     print("\n── Résumé ────────────────────────────────────────────────")
-    print(f"  R² global   : {r2_global:.4f}")
-    print(f"  Uniformité  : {uniformity:.4f}")
-    print(f"  Alignement  : {alignment:.4f}")
+    print(f"  R² global (linéaire) : {r2_global:.4f}")
+    print(f"  R² global (MLP)      : {r2_mlp:.4f}")
+    print(f"  Uniformité           : {uniformity:.4f}")
+    print(f"  Alignement           : {alignment:.4f}")
 
     save_figure(r2s, r2_global, uniformity, alignment, horizon_sims,
-                preds, s_val, args.save)
+                preds, s_val, args.save, r2s_mlp=r2s_mlp, r2_mlp=r2_mlp)
 
 
 if __name__ == "__main__":
