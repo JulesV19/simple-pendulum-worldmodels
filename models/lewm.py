@@ -104,18 +104,20 @@ class LeWorldModel(nn.Module):
         z_ctx = self.encoder(frames_flat).view(B, T, self.embed_dim)        # (B, T, D)
         z_tgt = self.target_encoder(frames_flat).view(B, T, self.embed_dim) # (B, T, D)
 
-        # Rollout K steps : z_t → z_{t+K} en enchaînant le predictor
-        # Force ω dans z : sans vitesse, les erreurs s'accumulent sur K steps.
-        # On utilise la cosine distance (pas MSE) pour éviter le raccourci "moyenne
-        # des deux modes ±ω" : outputer la moyenne de deux directions opposées donne
-        # cos-sim ≈ 0 (worst case), ce qui force le predictor à choisir une direction.
-        K      = self.rollout_k
-        z_roll = z_ctx[:, :T - K]          # (B, T-K, D) — points de départ
-        for _ in range(K):
-            z_roll = self.predictor(z_roll)
-        z_roll_n  = F.normalize(z_roll,           dim=-1)
-        z_tgt_n   = F.normalize(z_tgt[:, K:],     dim=-1)
-        pred_loss = (1.0 - (z_roll_n * z_tgt_n).sum(dim=-1)).mean()
+        # Perte multi-scale : prédit simultanément k=1 … rollout_k.
+        # - Chaque step du predictor reçoit un gradient direct (pas seulement le final)
+        # - Force ω dès k=1 (ambiguïté ±ω sur 1 step déjà non-triviale)
+        # - Cosine distance : évite le raccourci "moyenne des modes ±ω"
+        pred_loss = torch.tensor(0.0, device=frames.device)
+        for k in range(1, self.rollout_k + 1):
+            T_k    = T - k                                    # positions de départ valides
+            z_roll = z_ctx[:, :T_k]                           # (B, T_k, D)
+            for _ in range(k):
+                z_roll = self.predictor(z_roll)               # (B, T_k, D)
+            z_rn = F.normalize(z_roll,              dim=-1)
+            z_tn = F.normalize(z_tgt[:, k:k + T_k], dim=-1)  # (B, T_k, D)
+            pred_loss = pred_loss + (1.0 - (z_rn * z_tn).sum(dim=-1)).mean()
+        pred_loss = pred_loss / self.rollout_k
 
         z_flat = z_ctx.reshape(B * T, self.embed_dim)
         sigreg = sigreg_loss(z_flat, self.n_proj)
