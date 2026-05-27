@@ -1,6 +1,6 @@
 import math
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
 
 def sigreg_loss(z: torch.Tensor, n_proj: int = 512, max_n: int = 256) -> torch.Tensor:
@@ -38,33 +38,39 @@ def sigreg_loss(z: torch.Tensor, n_proj: int = 512, max_n: int = 256) -> torch.T
         z = z[idx]
         N = max_n
 
-    # Directions aléatoires uniformes sur la sphère S^{D-1}
+    # ── Termes anti-collapse dimensionnel ──────────────────────────────────────
+    #
+    # Le test d'Epps-Pulley sur projections aléatoires est aveugle au collapse
+    # dimensionnel : si la variance totale est conservée mais concentrée dans
+    # quelques dimensions, E[Var(h)] ≈ 1 et T ≈ 0 malgré le collapse.
+    #
+    # mean_penalty : pousse E[z_d] → 0 (gradient non-nul si collapse vers c ≠ 0).
+    # var_penalty  : pousse Std[z_d] ≥ 1 pour chaque dimension d (style VICReg).
+    #   Détecte et corrige les dimensions effondrées (std ≈ 0) avec un gradient
+    #   actif dès que std < 1, indépendamment des autres dimensions.
+    mean_penalty = z.mean(0).pow(2).mean()
+    var_penalty  = F.relu(1.0 - z.std(dim=0, unbiased=False)).mean()
+
+    # ── Projections aléatoires sur la sphère S^{D-1} ──────────────────────────
     u = torch.randn(D, n_proj, device=z.device, dtype=z.dtype)
     u = u / u.norm(dim=0, keepdim=True)          # (D, n_proj)
 
-    # Projections 1D : h[n, m] = z[n] · u[m]
-    # Pas de standardisation — la formule d'Epps-Pulley compare nativement
-    # contre N(0,1), ce qui pénalise les erreurs de moyenne ET de variance.
-    # Standardiser ici rendrait SIGReg aveugle au collapse (gradient nul quand
-    # tous les embeddings sont identiques, car z - mean → 0 et std → 0).
+    # Projections 1D sans standardisation — la formule d'Epps-Pulley compare
+    # nativement contre N(0,1) et détecte les erreurs de variance ET de forme.
     h = z @ u                                     # (N, n_proj)
 
-    # ── Statistique d'Epps-Pulley (vectorisée sur toutes les projections) ──
+    # ── Statistique d'Epps-Pulley (vectorisée sur toutes les projections) ──────
     #
     # T(h) = (1/N²) Σᵢ Σⱼ exp(-(hᵢ-hⱼ)²/2)
     #       - √2 · (1/N) Σᵢ exp(-hᵢ²/4)
     #       + 1/√3
     #
-    # Sous H₀ (normalité), T → 0.
-    # Si collapse (tous hᵢ identiques) : terme croisé → 1, T → 1/√3 > 0.
+    # Sous H₀ : h ~ N(0,1) → T → 0.
+    # Collapse vers constante c : terme croisé → 1, T → 1 - √2·exp(-c²/4) + 1/√3.
 
-    # Terme croisé : (N, N, n_proj) — calculé par blocs si N grand
-    diff = h.unsqueeze(0) - h.unsqueeze(1)        # (N, N, n_proj)
-    cross = torch.exp(-0.5 * diff.pow(2)).mean(dim=(0, 1))   # (n_proj,)
-
-    # Terme diagonal
+    diff   = h.unsqueeze(0) - h.unsqueeze(1)      # (N, N, n_proj)
+    cross  = torch.exp(-0.5 * diff.pow(2)).mean(dim=(0, 1))   # (n_proj,)
     single = torch.exp(-0.25 * h.pow(2)).mean(dim=0)          # (n_proj,)
+    T      = cross - math.sqrt(2) * single + 1.0 / math.sqrt(3)
 
-    T = cross - math.sqrt(2) * single + 1.0 / math.sqrt(3)   # (n_proj,)
-
-    return T.mean()
+    return T.mean() + mean_penalty + var_penalty
