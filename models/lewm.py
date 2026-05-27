@@ -32,7 +32,7 @@ class TransitionPredictor(nn.Module):
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """z: (B, T, D) → ẑ: (B, T, D)  —  ẑ[:, t] prédit z[:, t+1]"""
-        return z + self.net(z)
+        return self.net(z)
 
 
 class LeWorldModel(nn.Module):
@@ -59,6 +59,7 @@ class LeWorldModel(nn.Module):
         embed_dim:    int   = 128,
         hidden_dim:   int   = 512,
         lam:          float = 0.1,
+        mse_coef:     float = 0.1,   # poids du terme MSE pour contraindre la magnitude de z
         n_proj:       int   = 512,
         ema_momentum: float = 0.996,
         rollout_k:    int   = 5,     # steps de prédiction pour forcer ω dans z
@@ -71,6 +72,7 @@ class LeWorldModel(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.lam       = lam
+        self.mse_coef  = mse_coef
         self.n_proj    = n_proj
         self.rollout_k = rollout_k
 
@@ -116,7 +118,9 @@ class LeWorldModel(nn.Module):
                 z_roll = self.predictor(z_roll)               # (B, T_k, D)
             z_rn = F.normalize(z_roll,              dim=-1)
             z_tn = F.normalize(z_tgt[:, k:k + T_k], dim=-1)  # (B, T_k, D)
-            pred_loss = pred_loss + (1.0 - (z_rn * z_tn).sum(dim=-1)).mean()
+            cosine = (1.0 - (z_rn * z_tn).sum(dim=-1)).mean()
+            mse    = F.mse_loss(z_roll, z_tgt[:, k:k + T_k])
+            pred_loss = pred_loss + cosine + self.mse_coef * mse
         pred_loss = pred_loss / self.rollout_k
 
         z_flat = z_ctx.reshape(B * T, self.embed_dim)

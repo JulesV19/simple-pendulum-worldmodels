@@ -83,6 +83,9 @@ def generate_dataset(
     seed:           int = 42,
 ):
     out = Path(output_dir)
+    if out.exists():
+        for f in out.glob("traj_*.npz"):
+            f.unlink()
     out.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(seed)
@@ -118,11 +121,22 @@ def generate_dataset(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate simple pendulum dataset.")
+    parser.add_argument("--n_trajectories", type=int,   default=2000)
+    parser.add_argument("--n_frames",       type=int,   default=500)
+    parser.add_argument("--img_size",       type=int,   default=64)
+    parser.add_argument("--dt",             type=float, default=0.05)
+    parser.add_argument("--output_dir",     type=str,   default="dataset/double_pendulum")
+    parser.add_argument("--seed",           type=int,   default=42)
+    args = parser.parse_args()
+
     generate_dataset(
-        n_trajectories=2000,
-        n_frames=500,
-        img_size=64,
-        dt=0.05,
-        output_dir="dataset/double_pendulum",
-        seed=42,
+        n_trajectories=args.n_trajectories,
+        n_frames=args.n_frames,
+        img_size=args.img_size,
+        dt=args.dt,
+        output_dir=args.output_dir,
+        seed=args.seed,
     )
