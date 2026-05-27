@@ -60,12 +60,10 @@ def train(args):
     model = LeWorldModel(
         embed_dim=args.embed_dim,
         hidden_dim=args.hidden_dim,
-        n_heads=args.n_heads,
-        n_layers=args.n_layers,
         lam=args.lam,
         n_proj=args.n_proj,
         ema_momentum=args.ema_momentum,
-        mask_ratio=args.mask_ratio,
+        rollout_k=args.rollout_k,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -201,8 +199,8 @@ if __name__ == "__main__":
                         help="poids SIGReg")
     parser.add_argument("--ema-momentum", type=float, default=0.99,
                         help="momentum EMA du target encoder (τ)")
-    parser.add_argument("--mask-ratio",   type=float, default=0.4,
-                        help="fraction des frames masquées pour la prédiction (style V-JEPA)")
+    parser.add_argument("--rollout-k",    type=int,   default=5,
+                        help="nombre de steps de rollout pour la pred loss")
     parser.add_argument("--n-proj",       type=int,   default=512,
                         help="projections SIGReg (robuste à ce choix)")
     parser.add_argument("--epochs",       type=int,   default=50)

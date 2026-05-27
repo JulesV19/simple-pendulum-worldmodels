@@ -61,6 +61,7 @@ class LeWorldModel(nn.Module):
         lam:          float = 0.1,
         n_proj:       int   = 512,
         ema_momentum: float = 0.996,
+        rollout_k:    int   = 5,     # steps de prédiction pour forcer ω dans z
         # conservés pour compatibilité CLI mais non utilisés
         n_heads:      int   = 4,
         n_layers:     int   = 4,
@@ -71,6 +72,7 @@ class LeWorldModel(nn.Module):
         self.embed_dim = embed_dim
         self.lam       = lam
         self.n_proj    = n_proj
+        self.rollout_k = rollout_k
 
         self.encoder        = ContextEncoder(embed_dim, in_channels=6)
         self.target_encoder = TargetEncoder(self.encoder, momentum=ema_momentum)
@@ -102,9 +104,13 @@ class LeWorldModel(nn.Module):
         z_ctx = self.encoder(frames_flat).view(B, T, self.embed_dim)        # (B, T, D)
         z_tgt = self.target_encoder(frames_flat).view(B, T, self.embed_dim) # (B, T, D)
 
-        # MLP de transition : z_t → ẑ_{t+1}  (chaque pas indépendamment)
-        z_pred    = self.predictor(z_ctx[:, :-1])  # (B, T-1, D)
-        pred_loss = F.mse_loss(z_pred, z_tgt[:, 1:])
+        # Rollout K steps : z_t → z_{t+K} en enchaînant le predictor
+        # Force ω dans z : sans vitesse, les erreurs s'accumulent sur K steps
+        K      = self.rollout_k
+        z_roll = z_ctx[:, :T - K]          # (B, T-K, D) — points de départ
+        for _ in range(K):
+            z_roll = self.predictor(z_roll)
+        pred_loss = F.mse_loss(z_roll, z_tgt[:, K:])
 
         z_flat = z_ctx.reshape(B * T, self.embed_dim)
         sigreg = sigreg_loss(z_flat, self.n_proj)
