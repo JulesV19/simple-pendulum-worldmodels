@@ -29,4 +29,7 @@ visuals/
 .idea/
 .vscode/
 
-*.md
+# Notes et docs internes (ne pas publier)
+COURSE.md
+ISSUES.md
+results.md
