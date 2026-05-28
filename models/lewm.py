@@ -60,6 +60,7 @@ class LeWorldModel(nn.Module):
         hidden_dim:   int   = 512,
         lam:          float = 0.1,
         mse_coef:     float = 0.1,   # poids du terme MSE pour contraindre la magnitude de z
+        norm_coef:    float = 1.0,   # poids de la conservation de norme pendant le rollout
         n_proj:       int   = 512,
         ema_momentum: float = 0.996,
         rollout_k:    int   = 5,     # steps de prédiction pour forcer ω dans z
@@ -73,6 +74,7 @@ class LeWorldModel(nn.Module):
         self.embed_dim = embed_dim
         self.lam       = lam
         self.mse_coef  = mse_coef
+        self.norm_coef = norm_coef
         self.n_proj    = n_proj
         self.rollout_k = rollout_k
 
@@ -116,11 +118,13 @@ class LeWorldModel(nn.Module):
             z_roll = z_ctx[:, :T_k]                           # (B, T_k, D)
             for _ in range(k):
                 z_roll = self.predictor(z_roll)               # (B, T_k, D)
-            z_rn = F.normalize(z_roll,              dim=-1)
-            z_tn = F.normalize(z_tgt[:, k:k + T_k], dim=-1)  # (B, T_k, D)
-            cosine = (1.0 - (z_rn * z_tn).sum(dim=-1)).mean()
-            mse    = F.mse_loss(z_roll, z_tgt[:, k:k + T_k])
-            pred_loss = pred_loss + cosine + self.mse_coef * mse
+            z_tn   = z_tgt[:, k:k + T_k]                              # (B, T_k, D)
+            z_rn   = F.normalize(z_roll, dim=-1)
+            z_tnn  = F.normalize(z_tn,   dim=-1)
+            cosine = (1.0 - (z_rn * z_tnn).sum(dim=-1)).mean()
+            mse    = F.mse_loss(z_roll, z_tn)
+            norm   = F.mse_loss(z_roll.norm(dim=-1), z_tn.norm(dim=-1).detach())
+            pred_loss = pred_loss + cosine + self.mse_coef * mse + self.norm_coef * norm
         pred_loss = pred_loss / self.rollout_k
 
         z_flat = z_ctx.reshape(B * T, self.embed_dim)

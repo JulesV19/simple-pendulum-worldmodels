@@ -63,6 +63,7 @@ def train(args):
         hidden_dim=args.hidden_dim,
         lam=args.lam,
         mse_coef=args.mse_coef,
+        norm_coef=args.norm_coef,
         n_proj=args.n_proj,
         ema_momentum=args.ema_momentum,
         rollout_k=args.rollout_k,
@@ -203,6 +204,8 @@ if __name__ == "__main__":
                         help="poids SIGReg")
     parser.add_argument("--mse-coef",     type=float, default=0.1,
                         help="poids du terme MSE dans la pred loss (contrainte de magnitude)")
+    parser.add_argument("--norm-coef",    type=float, default=1.0,
+                        help="poids de la conservation de norme pendant le rollout")
     parser.add_argument("--ema-momentum", type=float, default=0.996,
                         help="momentum EMA du target encoder (τ)")
     parser.add_argument("--rollout-k",    type=int,   default=5,
