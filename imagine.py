@@ -371,7 +371,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint",  default="checkpoints/lewm_best.pt")
     parser.add_argument("--decoder",     default="checkpoints/decoder_best.pt")
     parser.add_argument("--dataset-dir", default="dataset/double_pendulum")
-    parser.add_argument("--n-steps",     type=int,  default=40)
+    parser.add_argument("--n-steps",     type=int,  default=100)
     parser.add_argument("--traj-idx",    type=int,  default=-1)
     parser.add_argument("--fps",         type=int,  default=12)
     parser.add_argument("--gif",         action="store_true")

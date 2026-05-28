@@ -52,7 +52,8 @@ def evaluate(encoder, decoder, loader, device):
         B, T, C, H, W = frames.shape
         z      = encoder.encode(frames)          # (B, T, D)
         recon  = decoder(z)                      # (B, T, 3, 64, 64)
-        total += nn.functional.mse_loss(recon, frames).item()
+        weight = 1.0 + 49.0 * frames
+        total += (weight * (recon - frames).pow(2)).mean().item()
     return total / len(loader)
 
 
@@ -94,7 +95,9 @@ def train(args):
                 z = encoder.encode(frames)       # (B, T, D)
 
             recon = decoder(z)                   # (B, T, 3, 64, 64)
-            loss  = nn.functional.mse_loss(recon, frames)
+            # weighted MSE : pixels blancs (bras) ~50× plus pénalisés que le fond noir
+            weight = 1.0 + 49.0 * frames
+            loss   = (weight * (recon - frames).pow(2)).mean()
 
             optimizer.zero_grad()
             loss.backward()
