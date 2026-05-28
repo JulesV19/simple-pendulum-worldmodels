@@ -1,0 +1,166 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .encoder import ContextEncoder
+
+
+class TransitionPredictor(nn.Module):
+    """MLP de transition : z_t → ẑ_{t+1}  (même architecture que lewm.py)."""
+
+    def __init__(self, embed_dim: int = 128, hidden_dim: int = 512):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
+class AEDecoder(nn.Module):
+    """
+    Décodeur z → frame  (symétrique de ContextEncoder).
+
+    Pas de normalisation L2 en entrée : le gradient doit traverser la magnitude
+    de z pour que l'encodeur apprenne à la contrôler.
+    Architecture miroir : FC → reshape (256,4,4) → ConvTranspose ×4 → (3,64,64).
+    """
+
+    def __init__(self, embed_dim: int = 128):
+        super().__init__()
+        self.fc = nn.Linear(embed_dim, 256 * 4 * 4)
+        self.deconv = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),  # 4→8
+            nn.ReLU(),
+            nn.ConvTranspose2d(128,  64, 4, stride=2, padding=1),  # 8→16
+            nn.ReLU(),
+            nn.ConvTranspose2d( 64,  32, 4, stride=2, padding=1),  # 16→32
+            nn.ReLU(),
+            nn.ConvTranspose2d( 32,   3, 4, stride=2, padding=1),  # 32→64
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """z: (B, D) ou (B, T, D) → frame: (B, 3, 64, 64) ou (B, T, 3, 64, 64)"""
+        seq = z.dim() == 3
+        if seq:
+            B, T, D = z.shape
+            z = z.reshape(B * T, D)
+
+        x = self.fc(z).view(z.shape[0], 256, 4, 4)
+        out = self.deconv(x)
+
+        if seq:
+            out = out.view(B, T, 3, 64, 64)
+        return out
+
+
+class AutoEncoder(nn.Module):
+    """
+    Baseline autoencoder pour comparaison avec LeWorldModel (JEPA).
+
+    Différence fondamentale vs JEPA :
+      - JEPA : supervision dans l'espace latent (target encoder EMA)
+      - AE   : supervision dans l'espace pixel (reconstruction MSE)
+
+    Pipeline (entraînement) :
+      1. frame stacking        : (frame_t, diff_t) → 6 canaux
+      2. Encoder               : 6ch → z_t  (B, T, D)   [gradient actif]
+      3. Predictor (k fois)    : z_t → ẑ_{t+k}          [rollout k=1…rollout_k]
+      4. Decoder               : ẑ_{t+k} → framê_{t+k}  [reconstruction pixel]
+      5. Loss                  : MSE(framê_{t+k}, frame_{t+k})
+
+    Pas d'encodeur cible EMA, pas de SIGReg, pas de cosine loss.
+    Encoder + predictor + decoder sont entraînés conjointement.
+    """
+
+    def __init__(
+        self,
+        embed_dim:  int   = 128,
+        hidden_dim: int   = 512,
+        rollout_k:  int   = 5,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.rollout_k = rollout_k
+
+        self.encoder   = ContextEncoder(embed_dim, in_channels=6)
+        self.predictor = TransitionPredictor(embed_dim, hidden_dim)
+        self.decoder   = AEDecoder(embed_dim)
+
+    # ── Frame stacking ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_pairs(frames: torch.Tensor) -> torch.Tensor:
+        """(B, T, 3, H, W) → (B, T, 6, H, W) : concat(frame_t, frame_t - frame_{t-1})"""
+        diff = torch.zeros_like(frames)
+        diff[:, 1:] = frames[:, 1:] - frames[:, :-1]
+        return torch.cat([frames, diff], dim=2)
+
+    # ── Forward (entraînement) ───────────────────────────────────────────────
+
+    def forward(self, frames: torch.Tensor) -> dict:
+        """
+        Args:
+            frames : (B, T, 3, H, W)  normalisées [0, 1]
+
+        Returns:
+            dict : loss, recon_loss (scalaires)
+        """
+        B, T, C, H, W = frames.shape
+        pairs = self._make_pairs(frames)
+        z = self.encoder(pairs.reshape(B * T, 6, H, W)).view(B, T, self.embed_dim)
+
+        recon_loss = torch.tensor(0.0, device=frames.device)
+        for k in range(1, self.rollout_k + 1):
+            T_k    = T - k
+            z_roll = z[:, :T_k]                    # (B, T_k, D)
+            for _ in range(k):
+                z_roll = self.predictor(z_roll)    # (B, T_k, D)
+            frame_pred = self.decoder(z_roll)      # (B, T_k, 3, H, W)
+            frame_tgt  = frames[:, k:k + T_k]     # (B, T_k, 3, H, W)
+            recon_loss = recon_loss + F.mse_loss(frame_pred, frame_tgt)
+        recon_loss = recon_loss / self.rollout_k
+
+        return {
+            "loss":       recon_loss,
+            "recon_loss": recon_loss.detach(),
+        }
+
+    # ── Inférence ────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def encode(self, frames: torch.Tensor) -> torch.Tensor:
+        """frames: (B, T, 3, H, W) → z: (B, T, embed_dim)"""
+        B, T, C, H, W = frames.shape
+        pairs = self._make_pairs(frames)
+        z = self.encoder(pairs.reshape(B * T, 6, H, W))
+        return z.view(B, T, self.embed_dim)
+
+    @torch.no_grad()
+    def imagine(self, z0: torch.Tensor, n_steps: int) -> torch.Tensor:
+        """
+        Rollout latent depuis z0.
+
+        Args:
+            z0      : (B, embed_dim) ou (B, 1, embed_dim)
+            n_steps : nombre de pas
+
+        Returns:
+            z_traj : (B, n_steps + 1, embed_dim)
+        """
+        if z0.dim() == 2:
+            z0 = z0.unsqueeze(1)
+
+        traj = [z0]
+        for _ in range(n_steps):
+            traj.append(self.predictor(traj[-1]))
+
+        return torch.cat(traj, dim=1)
