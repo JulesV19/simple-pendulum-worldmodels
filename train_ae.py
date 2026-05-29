@@ -68,7 +68,7 @@ def train(args):
         embed_dim=args.embed_dim,
         hidden_dim=args.hidden_dim,
         rollout_k=args.rollout_k,
-        grad_cutoff=args.grad_cutoff,
+        rollout_gamma=args.rollout_gamma,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -210,10 +210,10 @@ if __name__ == "__main__":
     parser.add_argument("--seq-len",      type=int,   default=100)
     parser.add_argument("--embed-dim",    type=int,   default=128)
     parser.add_argument("--hidden-dim",   type=int,   default=512)
-    parser.add_argument("--rollout-k",    type=int,   default=20,
+    parser.add_argument("--rollout-k",     type=int,   default=20,
                         help="nombre de steps de rollout pour la recon loss")
-    parser.add_argument("--grad-cutoff",  type=int,   default=5,
-                        help="k > grad_cutoff : gradient détaché dans l'encodeur")
+    parser.add_argument("--rollout-gamma", type=float, default=0.9,
+                        help="discount exponentiel de la loss par horizon (γ^k)")
     parser.add_argument("--epochs",       type=int,   default=50)
     parser.add_argument("--batch-size",   type=int,   default=16)
     parser.add_argument("--lr",           type=float, default=1e-4)
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt-dir",     default="checkpoints")
     parser.add_argument("--vis-dir",      default="visuals")
     parser.add_argument("--checkpoint",   default=None)
-    parser.add_argument("--var-lambda",    type=float, default=0.1,
+    parser.add_argument("--var-lambda",    type=float, default=1.0,
                         help="poids régularisation variance anti-collapse")
     parser.add_argument("--pixel-weight", type=float, default=10.0,
                         help="sur-pondération pixels brillants dans la MSE")

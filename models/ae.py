@@ -21,7 +21,8 @@ class TransitionPredictor(nn.Module):
         )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        return z + self.net(z)  # résiduel : prédit le delta, pas l'état suivant
+        # L2-normalize la sortie : empêche la dérive de norme lors des longs rollouts
+        return F.normalize(z + self.net(z), dim=-1)
 
 
 class AEDecoder(nn.Module):
@@ -83,15 +84,15 @@ class AutoEncoder(nn.Module):
 
     def __init__(
         self,
-        embed_dim:    int = 128,
-        hidden_dim:   int = 512,
-        rollout_k:    int = 20,
-        grad_cutoff:  int = 5,
+        embed_dim:      int   = 128,
+        hidden_dim:     int   = 512,
+        rollout_k:      int   = 20,
+        rollout_gamma:  float = 0.9,
     ):
         super().__init__()
-        self.embed_dim   = embed_dim
-        self.rollout_k   = rollout_k
-        self.grad_cutoff = grad_cutoff  # k > grad_cutoff : gradient détaché dans l'encodeur
+        self.embed_dim     = embed_dim
+        self.rollout_k     = rollout_k
+        self.rollout_gamma = rollout_gamma
 
         self.encoder   = ContextEncoder(embed_dim, in_channels=6)
         self.predictor = TransitionPredictor(embed_dim, hidden_dim)
@@ -129,26 +130,34 @@ class AutoEncoder(nn.Module):
         """
         B, T, C, H, W = frames.shape
         pairs = self._make_pairs(frames)
-        z = self.encoder(pairs.reshape(B * T, 6, H, W)).view(B, T, self.embed_dim)
+        # Normalisation L2 : ancre l'espace latent sur la sphère unité
+        # → la norme de z ne peut pas dériver lors des rollouts
+        z = F.normalize(
+            self.encoder(pairs.reshape(B * T, 6, H, W)).view(B, T, self.embed_dim),
+            dim=-1,
+        )
 
-        # k=0 : reconstruction directe
+        # k=0 : reconstruction directe (poids 1.0)
+        weight_sum = 1.0
         recon_loss = self._wmse(self.decoder(z), frames, pixel_weight)
 
-        # k=1..rollout_k : prédiction future
-        # k <= grad_cutoff : gradient complet (encodeur + predictor + décodeur)
-        # k >  grad_cutoff : gradient détaché dans l'encodeur → seuls predictor
-        #                    et décodeur apprennent des dynamiques longues, évite
-        #                    l'instabilité du gradient sur 20 couches MLP
+        # k=1..rollout_k : prédiction future avec discount exponentiel γ^k
+        # Gradient complet sur l'encodeur pour tous les k : l'encodeur doit
+        # apprendre à produire des z stables sous rollout (plus de grad_cutoff).
+        # La normalisation L2 du predictor borne les gradients naturellement.
+        gamma = self.rollout_gamma
+        w = gamma
         for k in range(1, self.rollout_k + 1):
             T_k    = T - k
-            z_src  = z[:, :T_k] if k <= self.grad_cutoff else z[:, :T_k].detach()
-            z_roll = z_src
+            z_roll = z[:, :T_k]
             for _ in range(k):
-                z_roll = self.predictor(z_roll)    # (B, T_k, D)
+                z_roll = self.predictor(z_roll)    # (B, T_k, D)  déjà L2-normé
             frame_pred = self.decoder(z_roll)      # (B, T_k, 3, H, W)
             frame_tgt  = frames[:, k:k + T_k]     # (B, T_k, 3, H, W)
-            recon_loss = recon_loss + self._wmse(frame_pred, frame_tgt, pixel_weight)
-        recon_loss = recon_loss / (self.rollout_k + 1)
+            recon_loss = recon_loss + w * self._wmse(frame_pred, frame_tgt, pixel_weight)
+            weight_sum += w
+            w *= gamma
+        recon_loss = recon_loss / weight_sum
 
         # Régularisation variance (VICReg) : std de chaque dim >= 1 sur le batch
         # Évite le collapse en pénalisant les embeddings constants
@@ -167,11 +176,11 @@ class AutoEncoder(nn.Module):
 
     @torch.no_grad()
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
-        """frames: (B, T, 3, H, W) → z: (B, T, embed_dim)"""
+        """frames: (B, T, 3, H, W) → z: (B, T, embed_dim)  L2-normé"""
         B, T, C, H, W = frames.shape
         pairs = self._make_pairs(frames)
-        z = self.encoder(pairs.reshape(B * T, 6, H, W))
-        return z.view(B, T, self.embed_dim)
+        z = self.encoder(pairs.reshape(B * T, 6, H, W)).view(B, T, self.embed_dim)
+        return F.normalize(z, dim=-1)
 
     @torch.no_grad()
     def imagine(self, z0: torch.Tensor, n_steps: int) -> torch.Tensor:
