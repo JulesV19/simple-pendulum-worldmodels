@@ -83,13 +83,15 @@ class AutoEncoder(nn.Module):
 
     def __init__(
         self,
-        embed_dim:  int   = 128,
-        hidden_dim: int   = 512,
-        rollout_k:  int   = 5,
+        embed_dim:    int = 128,
+        hidden_dim:   int = 512,
+        rollout_k:    int = 20,
+        grad_cutoff:  int = 5,
     ):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.rollout_k = rollout_k
+        self.embed_dim   = embed_dim
+        self.rollout_k   = rollout_k
+        self.grad_cutoff = grad_cutoff  # k > grad_cutoff : gradient détaché dans l'encodeur
 
         self.encoder   = ContextEncoder(embed_dim, in_channels=6)
         self.predictor = TransitionPredictor(embed_dim, hidden_dim)
@@ -133,9 +135,14 @@ class AutoEncoder(nn.Module):
         recon_loss = self._wmse(self.decoder(z), frames, pixel_weight)
 
         # k=1..rollout_k : prédiction future
+        # k <= grad_cutoff : gradient complet (encodeur + predictor + décodeur)
+        # k >  grad_cutoff : gradient détaché dans l'encodeur → seuls predictor
+        #                    et décodeur apprennent des dynamiques longues, évite
+        #                    l'instabilité du gradient sur 20 couches MLP
         for k in range(1, self.rollout_k + 1):
             T_k    = T - k
-            z_roll = z[:, :T_k]                    # (B, T_k, D)
+            z_src  = z[:, :T_k] if k <= self.grad_cutoff else z[:, :T_k].detach()
+            z_roll = z_src
             for _ in range(k):
                 z_roll = self.predictor(z_roll)    # (B, T_k, D)
             frame_pred = self.decoder(z_roll)      # (B, T_k, 3, H, W)
