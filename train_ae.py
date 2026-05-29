@@ -113,7 +113,8 @@ def train(args):
         for frames, _ in train_loader:
             frames = frames.to(device, non_blocking=True)
             optimizer.zero_grad()
-            m = model(frames, var_lambda=args.var_lambda)
+            m = model(frames, var_lambda=args.var_lambda,
+                      pixel_weight=args.pixel_weight)
             m["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -153,7 +154,8 @@ def train(args):
         )
         if epoch == 1 or epoch % 5 == 0:
             with torch.no_grad():
-                m_dbg = model(next(iter(val_loader))[0].to(device), var_lambda=0.0)
+                m_dbg = model(next(iter(val_loader))[0].to(device),
+                              var_lambda=0.0, pixel_weight=args.pixel_weight)
                 print(f"         recon_only={m_dbg['recon_loss'].item():.5f}"
                       f"  var_loss={m_dbg['var_loss'].item():.4f}")
 
@@ -217,7 +219,9 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt-dir",     default="checkpoints")
     parser.add_argument("--vis-dir",      default="visuals")
     parser.add_argument("--checkpoint",   default=None)
-    parser.add_argument("--var-lambda",   type=float, default=0.1,
+    parser.add_argument("--var-lambda",    type=float, default=0.1,
                         help="poids régularisation variance anti-collapse")
+    parser.add_argument("--pixel-weight", type=float, default=10.0,
+                        help="sur-pondération pixels brillants dans la MSE")
     args = parser.parse_args()
     train(args)

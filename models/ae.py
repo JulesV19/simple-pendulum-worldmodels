@@ -106,11 +106,21 @@ class AutoEncoder(nn.Module):
 
     # ── Forward (entraînement) ───────────────────────────────────────────────
 
-    def forward(self, frames: torch.Tensor, var_lambda: float = 0.1) -> dict:
+    @staticmethod
+    def _wmse(pred: torch.Tensor, target: torch.Tensor, pw: float) -> torch.Tensor:
+        """MSE pondérée : pixels brillants (pendule) reçoivent un poids (1 + pw * target).
+        Corrige le déséquilibre fond-noir / tige-blanche (~1-2 % des pixels)."""
+        w = 1.0 + pw * target
+        return (w * (pred - target).pow(2)).mean()
+
+    def forward(self, frames: torch.Tensor,
+                var_lambda: float = 0.1,
+                pixel_weight: float = 10.0) -> dict:
         """
         Args:
-            frames     : (B, T, 3, H, W)  normalisées [0, 1]
-            var_lambda : poids de la régularisation variance (anti-collapse)
+            frames       : (B, T, 3, H, W)  normalisées [0, 1]
+            var_lambda   : poids régularisation variance (anti-collapse)
+            pixel_weight : sur-pondération pixels brillants dans la MSE
 
         Returns:
             dict : loss, recon_loss, var_loss (scalaires)
@@ -119,8 +129,8 @@ class AutoEncoder(nn.Module):
         pairs = self._make_pairs(frames)
         z = self.encoder(pairs.reshape(B * T, 6, H, W)).view(B, T, self.embed_dim)
 
-        # k=0 : reconstruction directe (contrainte AE classique, manquante sans ça)
-        recon_loss = F.mse_loss(self.decoder(z), frames)
+        # k=0 : reconstruction directe
+        recon_loss = self._wmse(self.decoder(z), frames, pixel_weight)
 
         # k=1..rollout_k : prédiction future
         for k in range(1, self.rollout_k + 1):
@@ -130,7 +140,7 @@ class AutoEncoder(nn.Module):
                 z_roll = self.predictor(z_roll)    # (B, T_k, D)
             frame_pred = self.decoder(z_roll)      # (B, T_k, 3, H, W)
             frame_tgt  = frames[:, k:k + T_k]     # (B, T_k, 3, H, W)
-            recon_loss = recon_loss + F.mse_loss(frame_pred, frame_tgt)
+            recon_loss = recon_loss + self._wmse(frame_pred, frame_tgt, pixel_weight)
         recon_loss = recon_loss / (self.rollout_k + 1)
 
         # Régularisation variance (VICReg) : std de chaque dim >= 1 sur le batch
