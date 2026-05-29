@@ -212,7 +212,7 @@ if __name__ == "__main__":
                         help="poids de la conservation de norme pendant le rollout")
     parser.add_argument("--ema-momentum", type=float, default=0.996,
                         help="momentum EMA du target encoder (τ)")
-    parser.add_argument("--rollout-k",    type=int,   default=5,
+    parser.add_argument("--rollout-k",    type=int,   default=10,
                         help="nombre de steps de rollout pour la pred loss")
     parser.add_argument("--n-proj",       type=int,   default=512,
                         help="projections SIGReg (robuste à ce choix)")

@@ -139,7 +139,7 @@ def extract_embeddings(model, dataset_indices, dataset_dir: str,
     return Z, labels
 
 
-# ── Probe linéaire ────────────────────────────────────────────────────────────
+# ── Probe linéaire & MLP ──────────────────────────────────────────────────────
 
 def r2_score(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     """R² par dimension — shape (D,)"""
@@ -148,31 +148,25 @@ def r2_score(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     return 1.0 - ss_res / ss_tot.clamp(min=1e-8)
 
 
-def train_probe(Z_train: torch.Tensor, L_train: torch.Tensor,
-                Z_val:   torch.Tensor, L_val:   torch.Tensor,
-                epochs: int = 200, lr: float = 1e-2,
-                batch_size: int = 1024, device=None) -> dict:
-    """
-    Entraîne une régression linéaire stricte z → (θ, ω).
-    Les labels sont normalisés (zero-mean, unit-std) pour stabiliser l'entraînement.
-    Le R² est calculé sur les labels originaux (non normalisés) — il est invariant.
+class _MLPProbe(nn.Module):
+    def __init__(self, in_dim: int, hidden: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, 2),
+        )
 
-    Retourne un dict avec R²(θ), R²(ω), R²(moyen) sur val.
-    """
-    if device is None:
-        device = torch.device("cpu")
+    def forward(self, x):
+        return self.net(x)
 
-    # Normalisation de z (centre + scale) pour la stabilité numérique
-    z_mean = Z_train.mean(0)
-    z_std  = Z_train.std(0).clamp(min=1e-6)
-    Z_train_n = (Z_train - z_mean) / z_std
-    Z_val_n   = (Z_val   - z_mean) / z_std
 
-    D = Z_train_n.shape[1]
-
-    probe = nn.Linear(D, 2).to(device)
-    opt   = optim.Adam(probe.parameters(), lr=lr)
-
+def _train_one_probe(probe: nn.Module,
+                     Z_train_n: torch.Tensor, L_train: torch.Tensor,
+                     Z_val_n:   torch.Tensor, L_val:   torch.Tensor,
+                     epochs: int, lr: float, batch_size: int,
+                     device) -> dict:
+    opt    = optim.Adam(probe.parameters(), lr=lr)
     ds     = TensorDataset(Z_train_n.to(device), L_train.to(device))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
 
@@ -184,17 +178,49 @@ def train_probe(Z_train: torch.Tensor, L_train: torch.Tensor,
             loss.backward()
             opt.step()
 
-    # Évaluation sur val (CPU pour éviter l'OOM sur grands sets)
     probe.eval()
     with torch.no_grad():
         pred = probe(Z_val_n.to(device)).cpu()
 
-    r2 = r2_score(pred, L_val)   # (2,) : [R²(θ), R²(ω)]
+    r2 = r2_score(pred, L_val)
+    return {"r2_theta": r2[0].item(), "r2_omega": r2[1].item(), "r2_mean": r2.mean().item()}
+
+
+def train_probe(Z_train: torch.Tensor, L_train: torch.Tensor,
+                Z_val:   torch.Tensor, L_val:   torch.Tensor,
+                epochs: int = 200, lr: float = 1e-2,
+                batch_size: int = 1024, device=None) -> dict:
+    """
+    Entraîne un probe linéaire ET un probe MLP z → (θ, ω).
+    Retourne un dict avec les R² des deux probes.
+    L'écart linear→MLP mesure si l'information est accessible linéairement
+    ou seulement de façon non-linéaire (important pour valider la comparaison).
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    z_mean = Z_train.mean(0)
+    z_std  = Z_train.std(0).clamp(min=1e-6)
+    Z_train_n = (Z_train - z_mean) / z_std
+    Z_val_n   = (Z_val   - z_mean) / z_std
+
+    D = Z_train_n.shape[1]
+
+    lin_probe = nn.Linear(D, 2).to(device)
+    lin_res = _train_one_probe(lin_probe, Z_train_n, L_train, Z_val_n, L_val,
+                               epochs, lr, batch_size, device)
+
+    mlp_probe = _MLPProbe(D).to(device)
+    mlp_res = _train_one_probe(mlp_probe, Z_train_n, L_train, Z_val_n, L_val,
+                               epochs, lr * 0.1, batch_size, device)
 
     return {
-        "r2_theta": r2[0].item(),
-        "r2_omega": r2[1].item(),
-        "r2_mean":  r2.mean().item(),
+        "r2_theta":     lin_res["r2_theta"],
+        "r2_omega":     lin_res["r2_omega"],
+        "r2_mean":      lin_res["r2_mean"],
+        "mlp_r2_theta": mlp_res["r2_theta"],
+        "mlp_r2_omega": mlp_res["r2_omega"],
+        "mlp_r2_mean":  mlp_res["r2_mean"],
     }
 
 
@@ -248,7 +274,10 @@ def run_probe(model_type: str, ckpt_path: str,
     results["ckpt"]  = str(ckpt_path)
 
     if verbose:
-        print(f"R²(θ)={results['r2_theta']:.4f}  R²(ω)={results['r2_omega']:.4f}  R²(mean)={results['r2_mean']:.4f}")
+        print(f"  Linear  R²(θ)={results['r2_theta']:.4f}  R²(ω)={results['r2_omega']:.4f}  R²(mean)={results['r2_mean']:.4f}")
+        print(f"  MLP     R²(θ)={results['mlp_r2_theta']:.4f}  R²(ω)={results['mlp_r2_omega']:.4f}  R²(mean)={results['mlp_r2_mean']:.4f}")
+        gap = results['mlp_r2_mean'] - results['r2_mean']
+        print(f"  Gap lin→MLP : {gap:+.4f}  {'(info non-linéaire présente)' if gap > 0.01 else '(embeddings linéairement structurés)'}")
 
     return results
 
@@ -336,17 +365,28 @@ def run_compare(jepa_ckpt: str, rec_ckpt: str, dataset_dir: str,
     r_rec = run_probe("rec", rec_ckpt, dataset_dir, label_frac,
                       probe_epochs, probe_lr, probe_bs, device, seed=seed)
 
-    print("\n" + "═" * 55)
-    print(f"{'':20s}  {'JEPA':>10s}  {'AE (Rec)':>10s}")
-    print("─" * 55)
-    print(f"{'R²(θ)':20s}  {r_jepa['r2_theta']:10.4f}  {r_rec['r2_theta']:10.4f}")
-    print(f"{'R²(ω)':20s}  {r_jepa['r2_omega']:10.4f}  {r_rec['r2_omega']:10.4f}")
-    print(f"{'R²(mean)':20s}  {r_jepa['r2_mean']:10.4f}  {r_rec['r2_mean']:10.4f}")
-    print("═" * 55)
-    winner_theta = "JEPA" if r_jepa["r2_theta"] > r_rec["r2_theta"] else "AE"
-    winner_omega = "JEPA" if r_jepa["r2_omega"] > r_rec["r2_omega"] else "AE"
-    print(f"  θ : {winner_theta} gagne  |  ω : {winner_omega} gagne")
-    print("═" * 55)
+    print("\n" + "═" * 65)
+    print(f"{'':25s}  {'JEPA':>10s}  {'AE (Rec)':>10s}  {'Δ(JEPA-AE)':>10s}")
+    print("─" * 65)
+    print("  — Probe LINÉAIRE —")
+    for key, label in [("r2_theta","R²(θ)"), ("r2_omega","R²(ω)"), ("r2_mean","R²(mean)")]:
+        delta = r_jepa[key] - r_rec[key]
+        print(f"  {label:22s}  {r_jepa[key]:10.4f}  {r_rec[key]:10.4f}  {delta:+10.4f}")
+    print("─" * 65)
+    print("  — Probe MLP (2×256) —")
+    for key, label in [("mlp_r2_theta","R²(θ)"), ("mlp_r2_omega","R²(ω)"), ("mlp_r2_mean","R²(mean)")]:
+        delta = r_jepa[key] - r_rec[key]
+        print(f"  {label:22s}  {r_jepa[key]:10.4f}  {r_rec[key]:10.4f}  {delta:+10.4f}")
+    print("─" * 65)
+    print("  — Gap linéaire → MLP (info non-linéaire) —")
+    gap_jepa = r_jepa["mlp_r2_mean"] - r_jepa["r2_mean"]
+    gap_rec  = r_rec["mlp_r2_mean"]  - r_rec["r2_mean"]
+    print(f"  {'Gap R²(mean)':22s}  {gap_jepa:+10.4f}  {gap_rec:+10.4f}")
+    print("═" * 65)
+    winner_lin = "JEPA" if r_jepa["r2_mean"] > r_rec["r2_mean"] else "AE"
+    winner_mlp = "JEPA" if r_jepa["mlp_r2_mean"] > r_rec["mlp_r2_mean"] else "AE"
+    print(f"  Linéaire : {winner_lin} gagne  |  MLP : {winner_mlp} gagne")
+    print("═" * 65)
 
     if plot:
         _plot_compare(r_jepa, r_rec)
@@ -359,31 +399,38 @@ def _plot_compare(r_jepa: dict, r_rec: dict):
         return
 
     DARK = "#111"
-    labels  = ["R²(θ)", "R²(ω)", "R²(mean)"]
-    vals_j  = [r_jepa["r2_theta"], r_jepa["r2_omega"], r_jepa["r2_mean"]]
-    vals_r  = [r_rec["r2_theta"],  r_rec["r2_omega"],  r_rec["r2_mean"]]
+    metrics = ["R²(θ)", "R²(ω)", "R²(mean)"]
+    keys_lin = ["r2_theta",     "r2_omega",     "r2_mean"]
+    keys_mlp = ["mlp_r2_theta", "mlp_r2_omega", "mlp_r2_mean"]
 
-    x      = np.arange(len(labels))
-    width  = 0.35
-
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
     fig.patch.set_facecolor(DARK)
-    ax.set_facecolor(DARK)
+    titles = ["Probe LINÉAIRE", "Probe MLP (2×256)"]
 
-    ax.bar(x - width/2, vals_j, width, label="JEPA",     color="#4fc3f7", alpha=0.85)
-    ax.bar(x + width/2, vals_r, width, label="AE (Rec)", color="#ff8a65", alpha=0.85)
+    for ax, title, k_lin, k_mlp in [
+        (axes[0], titles[0], keys_lin, keys_lin),
+        (axes[1], titles[1], keys_mlp, keys_mlp),
+    ]:
+        ax.set_facecolor(DARK)
+        x = np.arange(len(metrics))
+        width = 0.35
+        vals_j = [r_jepa[k] for k in (k_lin if title == titles[0] else k_mlp)]
+        vals_r = [r_rec[k]  for k in (k_lin if title == titles[0] else k_mlp)]
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, color="white")
-    ax.set_ylabel("R²", color="white")
-    ax.set_ylim(0, 1.05)
-    ax.set_title("Probe linéaire z → (θ, ω)", color="white")
-    ax.legend(facecolor="#222", labelcolor="white", edgecolor="#444")
-    ax.tick_params(colors="white")
-    ax.axhline(1.0, color="#555", ls=":", lw=1)
-    for sp in ax.spines.values():
-        sp.set_edgecolor("#444")
+        ax.bar(x - width/2, vals_j, width, label="JEPA",     color="#4fc3f7", alpha=0.85)
+        ax.bar(x + width/2, vals_r, width, label="AE (Rec)", color="#ff8a65", alpha=0.85)
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, color="white")
+        ax.set_ylabel("R²", color="white")
+        ax.set_ylim(0, 1.08)
+        ax.set_title(title, color="white")
+        ax.legend(facecolor="#222", labelcolor="white", edgecolor="#444")
+        ax.tick_params(colors="white")
+        ax.axhline(1.0, color="#555", ls=":", lw=1)
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#444")
 
+    fig.suptitle("Probe z → (θ, ω) — JEPA vs AE", color="white", fontsize=13)
     plt.tight_layout()
     plt.savefig("visuals/probe_compare.png", dpi=120, bbox_inches="tight", facecolor=DARK)
     plt.show()
