@@ -21,7 +21,7 @@ class TransitionPredictor(nn.Module):
         )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        return self.net(z)
+        return z + self.net(z)  # résiduel : prédit le delta, pas l'état suivant
 
 
 class AEDecoder(nn.Module):
