@@ -1,6 +1,7 @@
-# LeWorldModel
+# JEPA vs Autoencoder World Model
 
-Deux world models entraînés sur un pendule simple, conçus pour être comparés scientifiquement.
+Comparaison empirique de deux approches de world model sur pendule simple :
+**JEPA** (prédiction dans l'espace latent) contre une **architecture autoencoder classique** (reconstruction pixel).
 
 | | **JEPA** | **AE (Rec)** |
 |---|---|---|
