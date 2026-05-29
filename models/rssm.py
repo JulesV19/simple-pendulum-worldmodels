@@ -96,7 +96,12 @@ class RSSM(nn.Module):
         self.feat_dim   = feat_dim
         self.h_dim      = h_dim
         self.s_dim      = s_dim
-        self.latent_dim = h_dim + s_dim   # dimension du vecteur envoyé au décodeur
+        # Le décodeur utilise UNIQUEMENT h_t (état déterministe).
+        # Décoder depuis cat(h,s) crée un "posterior shortcut" : s_t peut encoder
+        # la frame courante directement, le GRU n'apprend pas de dynamique, et
+        # l'imagination échoue (anneau blanc). Décoder depuis h_t force le GRU
+        # à porter toute l'information temporelle.
+        self.latent_dim = h_dim   # = dim décodeur = dim retournée par encode()/imagine()
 
         self.encoder   = ContextEncoder(feat_dim, in_channels=6)
         # Projection du state stochastique avant le GRU (PlaNet/DreamerV2 :
@@ -107,8 +112,7 @@ class RSSM(nn.Module):
         self.gru_cell  = nn.GRUCell(h_dim, h_dim)   # input_size=h_dim après projection
         self.prior     = _Prior(h_dim, s_dim, hidden_dim)
         self.posterior = _Posterior(h_dim, feat_dim, s_dim, hidden_dim)
-        # Réutilise AEDecoder avec embed_dim = h_dim + s_dim
-        self.decoder   = AEDecoder(h_dim + s_dim)
+        self.decoder   = AEDecoder(h_dim)   # entrée = h_t uniquement
 
     # ── Utilitaires ──────────────────────────────────────────────────────────────
 
@@ -170,12 +174,11 @@ class RSSM(nn.Module):
             s_list.append(s)
             kl_list.append(_kl_gaussian(mu_q, std_q, mu_p, std_p))   # (B,)
 
-        h_seq = torch.stack(h_list, dim=1)            # (B, T, h_dim)
-        s_seq = torch.stack(s_list, dim=1)            # (B, T, s_dim)
-        z_seq = torch.cat([h_seq, s_seq], dim=-1)     # (B, T, latent_dim)
+        h_seq = torch.stack(h_list, dim=1)   # (B, T, h_dim)
 
-        # Reconstruction pixel
-        recon_loss = _wmse(self.decoder(z_seq), frames, pixel_weight)
+        # Reconstruction depuis h_t uniquement — force le GRU à apprendre les dynamiques.
+        # s_t reste dans la loss via KL mais n'a pas accès au décodeur.
+        recon_loss = _wmse(self.decoder(h_seq), frames, pixel_weight)
 
         # KL brute (non-clamped) — utile pour diagnostiquer le posterior collapse
         kl_raw = torch.stack(kl_list, dim=1).mean()   # (B, T) → scalaire
@@ -214,10 +217,10 @@ class RSSM(nn.Module):
         for t in range(T):
             h = self.gru_cell(self.fc_embed(s), h)
             mu_q, _ = self.posterior(h, feats[:, t])
-            s = mu_q   # moyenne (pas d'échantillonnage pour l'encodage)
-            z_list.append(torch.cat([h, s], dim=-1))
+            s = mu_q
+            z_list.append(h)   # h uniquement — cohérent avec le décodeur
 
-        return torch.stack(z_list, dim=1)   # (B, T, latent_dim)
+        return torch.stack(z_list, dim=1)   # (B, T, h_dim)
 
     @torch.no_grad()
     def imagine(
@@ -254,13 +257,13 @@ class RSSM(nn.Module):
             h = self.gru_cell(self.fc_embed(s), h)
             mu_q, _ = self.posterior(h, feats[:, t])
             s = mu_q
-            z_list.append(torch.cat([h, s], dim=-1))
+            z_list.append(h)   # h uniquement — cohérent avec le décodeur
 
         # Phase d'imagination — prior uniquement, sans encodeur
         for _ in range(n_steps):
             h = self.gru_cell(self.fc_embed(s), h)
             mu_p, std_p = self.prior(h)
             s = mu_p + std_p * torch.randn_like(mu_p) if stochastic else mu_p
-            z_list.append(torch.cat([h, s], dim=-1))
+            z_list.append(h)
 
-        return torch.stack(z_list, dim=1)   # (B, T_seed + n_steps, latent_dim)
+        return torch.stack(z_list, dim=1)   # (B, T_seed + n_steps, h_dim)
