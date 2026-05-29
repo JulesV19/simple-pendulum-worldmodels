@@ -225,12 +225,12 @@ if __name__ == "__main__":
                         help="état stochastique")
     parser.add_argument("--hidden-dim",   type=int,   default=256,
                         help="taille MLP prior/posterior")
-    parser.add_argument("--kl-scale",     type=float, default=1.0,
-                        help="poids du terme KL dans la loss")
-    parser.add_argument("--free-nats",    type=float, default=1.0,
-                        help="plancher KL sur le scalaire final (3.0 PlaNet, 1.0 conseillé pendule)")
-    parser.add_argument("--pixel-weight", type=float, default=10.0,
-                        help="sur-pondération pixels brillants dans wmse")
+    parser.add_argument("--kl-scale",     type=float, default=0.0,
+                        help="poids KL (0 = GRU déterministe pur, recommandé pour pendule)")
+    parser.add_argument("--free-nats",    type=float, default=0.0,
+                        help="plancher KL (0 quand kl-scale=0)")
+    parser.add_argument("--pixel-weight", type=float, default=50.0,
+                        help="sur-pondération pixels blancs (bras) dans wmse")
     parser.add_argument("--epochs",       type=int,   default=100)
     parser.add_argument("--batch-size",   type=int,   default=32)
     parser.add_argument("--lr",           type=float, default=6e-4,
