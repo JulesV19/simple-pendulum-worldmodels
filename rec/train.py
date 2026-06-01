@@ -1,5 +1,5 @@
 """
-Entraînement LeWorldModelRec (reconstruction MSE + SIGReg).
+Entraînement LeWorldModelRec (reconstruction + perceptual + freq + SIGReg).
 
 Usage:
   python3 rec/train.py
@@ -36,7 +36,7 @@ def get_device():
 @torch.no_grad()
 def evaluate(model: LeWorldModelRec, loader, device) -> dict:
     model.eval()
-    sums = {"loss": 0.0, "rec_loss": 0.0, "pred_loss": 0.0, "sigreg": 0.0}
+    sums = {"loss": 0.0, "pred_loss": 0.0, "sigreg": 0.0}
     for frames, _ in loader:
         m = model(frames.to(device, non_blocking=True))
         for k in sums:
@@ -63,11 +63,10 @@ def train(args):
         embed_dim=args.embed_dim,
         hidden_dim=args.hidden_dim,
         lam=args.lam,
-        rec_coef=args.rec_coef,
-        pred_coef=args.pred_coef,
-        perceptual_coef=0.0,
-        freq_coef=args.freq_coef,
+        mse_coef=args.mse_coef,
+        norm_coef=args.norm_coef,
         n_proj=args.n_proj,
+        ema_momentum=args.ema_momentum,
         rollout_k=args.rollout_k,
     ).to(device)
 
@@ -101,13 +100,13 @@ def train(args):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     vis_dir.mkdir(parents=True, exist_ok=True)
 
-    history   = {"train": [], "val": [], "rec": [], "pred": [], "freq": [], "sigreg": []}
+    history   = {"train": [], "val": [], "pred": [], "sigreg": []}
     best_val  = float("inf")
 
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         t0   = time.time()
-        sums = {"loss": 0.0, "rec_loss": 0.0, "pred_loss": 0.0, "freq_loss": 0.0, "sigreg": 0.0}
+        sums = {"loss": 0.0, "pred_loss": 0.0, "sigreg": 0.0}
 
         for frames, _ in train_loader:
             frames = frames.to(device, non_blocking=True)
@@ -127,9 +126,7 @@ def train(args):
 
         history["train"].append(train_loss)
         history["val"].append(val_m["loss"])
-        history["rec"].append(sums["rec_loss"] / n)
         history["pred"].append(sums["pred_loss"] / n)
-        history["freq"].append(sums["freq_loss"] / n)
         history["sigreg"].append(sums["sigreg"] / n)
 
         improved = val_m["loss"] < best_val
@@ -148,9 +145,7 @@ def train(args):
         print(
             f"Epoch {epoch:3d}/{args.epochs}"
             f"  loss={train_loss:.4f}"
-            f"  rec={sums['rec_loss']/n:.4f}"
             f"  pred={sums['pred_loss']/n:.4f}"
-            f"  freq={sums['freq_loss']/n:.4f}"
             f"  sig={sums['sigreg']/n:.4f}"
             f"  val={val_m['loss']:.4f}"
             f"  lr={lr_now:.2e}"
@@ -182,7 +177,6 @@ def _save_plot(history, path):
 
     ax = axes[1]
     ax.set_facecolor("#111")
-    ax.plot(epochs, history["rec"],    color="#4fc3f7", label="rec MSE")
     ax.plot(epochs, history["pred"],   color="#a5d6a7", label="pred MSE")
     ax.plot(epochs, history["sigreg"], color="#ce93d8", label="SIGReg")
     ax.set_title("Décomposition", color="white")
@@ -205,14 +199,16 @@ if __name__ == "__main__":
                         help="longueur de la fenêtre tirée aléatoirement dans chaque trajectoire")
     parser.add_argument("--embed-dim",    type=int,   default=128)
     parser.add_argument("--hidden-dim",   type=int,   default=512)
+    parser.add_argument("--n-heads",      type=int,   default=4)
+    parser.add_argument("--n-layers",     type=int,   default=4)
     parser.add_argument("--lam",          type=float, default=0.5,
                         help="poids SIGReg")
-    parser.add_argument("--rec-coef",     type=float, default=1.0,
-                        help="poids reconstruction MSE")
-    parser.add_argument("--pred-coef",    type=float, default=1.0,
-                        help="poids prédiction rollout MSE")
-    parser.add_argument("--freq-coef",    type=float, default=0.05,
-                        help="poids frequency loss FFT (0 = désactivé)")
+    parser.add_argument("--mse-coef",     type=float, default=0.1,
+                        help="poids du terme MSE dans la pred loss (contrainte de magnitude)")
+    parser.add_argument("--norm-coef",    type=float, default=1.0,
+                        help="poids de la conservation de norme pendant le rollout")
+    parser.add_argument("--ema-momentum", type=float, default=0.996,
+                        help="momentum EMA du target encoder (τ)")
     parser.add_argument("--rollout-k",    type=int,   default=10,
                         help="nombre de steps de rollout pour la pred loss")
     parser.add_argument("--n-proj",       type=int,   default=512,
