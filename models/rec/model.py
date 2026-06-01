@@ -60,8 +60,8 @@ class LeWorldModelRec(nn.Module):
         lam:             float = 0.1,    # poids SIGReg
         rec_coef:        float = 1.0,    # poids reconstruction MSE
         pred_coef:       float = 1.0,    # poids prédiction rollout MSE
-        perceptual_coef: float = 0.1,    # poids perceptual loss (VGG16) — 0 = désactivé
-        freq_coef:       float = 0.05,   # poids frequency loss (FFT) — 0 = désactivé
+        perceptual_coef: float = 0.0,    # poids perceptual loss (VGG16) — 0 = désactivé
+        freq_coef:       float = 0.0,    # poids frequency loss (FFT) — 0 = désactivé
         n_proj:          int   = 512,
         rollout_k:       int   = 5,
         # paramètres ignorés (compat CLI LeWorldModel)
