@@ -2,8 +2,8 @@
 Entraînement du décodeur z → frame (encodeur gelé).
 
 Usage:
-  python3 train_decoder.py --checkpoint checkpoints/lewm_best.pt
-  python3 train_decoder.py --checkpoint checkpoints/lewm_best.pt --epochs 30 --lr 3e-4
+  python3 jepa/train_decoder.py --checkpoint checkpoints/jepa/lewm_best.pt
+  python3 jepa/train_decoder.py --checkpoint checkpoints/jepa/lewm_best.pt --epochs 30 --lr 3e-4
 """
 
 import sys

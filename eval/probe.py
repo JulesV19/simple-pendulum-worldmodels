@@ -64,7 +64,7 @@ def load_jepa(path: str, device) -> LeWorldModel:
         lam          = a.get("lam",          0.5),
         n_proj       = a.get("n_proj",       512),
         ema_momentum = a.get("ema_momentum", 0.996),
-        rollout_k    = a.get("rollout_k",    5),
+        rollout_k    = a.get("rollout_k",    10),
     ).to(device)
     model.load_state_dict(ckpt["model"], strict=False)
     model.eval()
@@ -81,7 +81,7 @@ def load_rec(path: str, device) -> LeWorldModelRec:
         hidden_dim      = a.get("hidden_dim",      512),
         lam             = a.get("lam",             0.5),
         n_proj          = a.get("n_proj",          512),
-        rollout_k       = a.get("rollout_k",       5),
+        rollout_k       = a.get("rollout_k",       10),
         perceptual_coef = 0.0,
         freq_coef       = 0.0,
     ).to(device)

@@ -8,8 +8,8 @@
      prédiction
 
 Usage:
-  python3 eval_lewm.py --checkpoint checkpoints/lewm_best.pt
-  python3 eval_lewm.py --checkpoint checkpoints/lewm_best.pt --save visuals/eval.png
+  python3 jepa/eval.py --checkpoint checkpoints/jepa/lewm_best.pt
+  python3 jepa/eval.py --checkpoint checkpoints/jepa/lewm_best.pt --save visuals/eval.png
 """
 
 import sys

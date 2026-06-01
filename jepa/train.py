@@ -5,9 +5,9 @@ Pas d'encodeur cible EMA, pas de VICReg, pas de masquage complexe.
 Un seul hyperparamètre effectif : λ (poids SIGReg).
 
 Usage:
-  python3 train_lewm.py
-  python3 train_lewm.py --lam 0.1 --embed-dim 128 --epochs 100
-  python3 train_lewm.py --checkpoint checkpoints/lewm_best.pt   # resume
+  python3 jepa/train.py
+  python3 jepa/train.py --lam 0.5 --embed-dim 128 --epochs 50
+  python3 jepa/train.py --checkpoint checkpoints/jepa/lewm_best.pt   # resume
 """
 
 import sys
@@ -208,7 +208,7 @@ if __name__ == "__main__":
                         help="poids SIGReg")
     parser.add_argument("--mse-coef",     type=float, default=0.1,
                         help="poids du terme MSE dans la pred loss (contrainte de magnitude)")
-    parser.add_argument("--norm-coef",    type=float, default=1.0,
+    parser.add_argument("--norm-coef",    type=float, default=0.0,
                         help="poids de la conservation de norme pendant le rollout")
     parser.add_argument("--ema-momentum", type=float, default=0.996,
                         help="momentum EMA du target encoder (τ)")
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-proj",       type=int,   default=512,
                         help="projections SIGReg (robuste à ce choix)")
     parser.add_argument("--epochs",       type=int,   default=50)
-    parser.add_argument("--batch-size",   type=int,   default=16)
+    parser.add_argument("--batch-size",   type=int,   default=32)
     parser.add_argument("--lr",           type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--num-workers",  type=int,   default=4)

@@ -81,7 +81,7 @@ python3 tools/visualize.py     # grid de trajectoires
 ```bash
 # Local
 python3 jepa/train.py
-python3 jepa/train.py --lam 1.0 --rollout-k 20 --epochs 50
+python3 jepa/train.py --lam 0.5 --rollout-k 10 --epochs 50
 python3 jepa/train.py --checkpoint checkpoints/jepa/lewm_best.pt   # resume
 
 # Décodeur séparé (encodeur gelé)
@@ -95,8 +95,8 @@ Colab : `jepa/notebooks/train_colab.ipynb` · `jepa/notebooks/train_decoder_cola
 | Paramètre | Valeur | Note |
 |---|---|---|
 | `embed_dim` | 128 | dimension latente |
-| `rollout_k` | 20 | ~1 s ≈ demi-période du pendule |
-| `lam` | 1.0 | poids SIGReg |
+| `rollout_k` | 10 | ~0.5 s — aligné avec AE |
+| `lam` | 0.5 | poids SIGReg |
 | `mse_coef` | 0.1 | poids MSE dans pred_loss |
 | `ema_momentum` | 0.996 | EMA target encoder |
 
@@ -128,7 +128,7 @@ Colab : `rec/notebooks/train_colab.ipynb`
 | Paramètre | Valeur | Note |
 |---|---|---|
 | `embed_dim` | 128 | dimension latente |
-| `rollout_k` | 5 | horizon de prédiction |
+| `rollout_k` | 10 | horizon de prédiction — aligné avec JEPA |
 | `rec_coef` | 1.0 | poids reconstruction MSE |
 | `perceptual_coef` | 0.1 | poids VGG16 — anti-flou |
 | `freq_coef` | 0.05 | poids FFT — anti-flou |
@@ -235,8 +235,8 @@ R²(mean)          0.942     0.940    quasi-identique
 ```
 
 R²(ω) est la signature de la qualité dynamique : JEPA encode ω sans supervision
-pixel grâce au rollout_k=20 qui force le predictor à résoudre la dynamique.
+pixel grâce au rollout_k=10 qui force le predictor à résoudre la dynamique.
 L'AE encode ω par effet de bord du diff de frames, mais avec moins de pression.
 
-> **Limite de cette comparaison :** rollout_k=20 (JEPA) vs 5 (AE), batch_size=32 vs 16.
+> **Limite de cette comparaison :** rollout_k=10 (aligné), batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur).
 > Pour une comparaison contrôlée, aligner ces hyperparamètres et tracer R² vs gradient steps.

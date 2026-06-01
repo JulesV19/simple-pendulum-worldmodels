@@ -384,7 +384,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint",  default="checkpoints/lewm_rec_best.pt")
+    parser.add_argument("--checkpoint",  default="checkpoints/rec/lewm_rec_best.pt")
     parser.add_argument("--dataset-dir", default="dataset/pendulum")
     parser.add_argument("--n-steps",     type=int, default=100)
     parser.add_argument("--traj-idx",    type=int, default=-1)
