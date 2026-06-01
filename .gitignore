@@ -21,6 +21,7 @@ visuals/
 *.png
 *.gif
 *.txt
+*.json
 
 # macOS
 .DS_Store
