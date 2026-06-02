@@ -186,33 +186,59 @@ def _train_one_probe(probe: nn.Module,
     return {"r2_theta": r2[0].item(), "r2_omega": r2[1].item(), "r2_mean": r2.mean().item()}
 
 
+def _lstsq_probe(Z_train: torch.Tensor, L_train: torch.Tensor,
+                 Z_val: torch.Tensor, L_val: torch.Tensor) -> dict:
+    """
+    Régression linéaire exacte (moindres carrés numpy).
+    Solution optimale garantie — indépendante du lr, des epochs et de l'init.
+    """
+    Ztr = Z_train.cpu().numpy()
+    Ltr = L_train.cpu().numpy()
+    Zvl = Z_val.cpu().numpy()
+    Lvl = L_val.cpu().numpy()
+
+    mu    = Ztr.mean(0)
+    sigma = Ztr.std(0) + 1e-8
+    Ztr_n = (Ztr - mu) / sigma
+    Zvl_n = (Zvl - mu) / sigma
+
+    W, _, _, _ = np.linalg.lstsq(
+        np.c_[Ztr_n, np.ones(len(Ztr_n))], Ltr, rcond=None
+    )
+    pred = np.c_[Zvl_n, np.ones(len(Zvl_n))] @ W
+
+    r2_th = float(1 - ((Lvl[:, 0] - pred[:, 0])**2).sum() /
+                      ((Lvl[:, 0] - Lvl[:, 0].mean())**2).sum())
+    r2_om = float(1 - ((Lvl[:, 1] - pred[:, 1])**2).sum() /
+                      ((Lvl[:, 1] - Lvl[:, 1].mean())**2).sum())
+    return {"r2_theta": r2_th, "r2_omega": r2_om, "r2_mean": (r2_th + r2_om) / 2}
+
+
 def train_probe(Z_train: torch.Tensor, L_train: torch.Tensor,
                 Z_val:   torch.Tensor, L_val:   torch.Tensor,
-                epochs: int = 200, lr: float = 1e-2,
+                epochs: int = 200, lr: float = 1e-3,
                 batch_size: int = 1024, device=None) -> dict:
     """
-    Entraîne un probe linéaire ET un probe MLP z → (θ, ω).
-    Retourne un dict avec les R² des deux probes.
+    Probe linéaire (lstsq exact) + probe MLP (Adam).
     L'écart linear→MLP mesure si l'information est accessible linéairement
-    ou seulement de façon non-linéaire (important pour valider la comparaison).
+    ou seulement de façon non-linéaire.
     """
     if device is None:
         device = torch.device("cpu")
 
+    # Probe linéaire — solution exacte, pas d'Adam
+    lin_res = _lstsq_probe(Z_train, L_train, Z_val, L_val)
+
+    # Probe MLP — Adam, mesure l'accessibilité non-linéaire
     z_mean = Z_train.mean(0)
     z_std  = Z_train.std(0).clamp(min=1e-6)
     Z_train_n = (Z_train - z_mean) / z_std
     Z_val_n   = (Z_val   - z_mean) / z_std
 
     D = Z_train_n.shape[1]
-
-    lin_probe = nn.Linear(D, 2).to(device)
-    lin_res = _train_one_probe(lin_probe, Z_train_n, L_train, Z_val_n, L_val,
-                               epochs, lr, batch_size, device)
-
     mlp_probe = _MLPProbe(D).to(device)
     mlp_res = _train_one_probe(mlp_probe, Z_train_n, L_train, Z_val_n, L_val,
-                               epochs, lr * 0.1, batch_size, device)
+                               epochs, lr, batch_size, device)
 
     return {
         "r2_theta":     lin_res["r2_theta"],

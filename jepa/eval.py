@@ -104,40 +104,58 @@ def compute_r2s(preds: np.ndarray, targets: np.ndarray):
     return r2s
 
 
-def _run_probe(head, Zt, St, Zv, n_epochs, lr=1e-3):
-    opt = optim.Adam(head.parameters(), lr=lr)
+def _lstsq_probe(Z_tr, S_tr, Z_vl):
+    """Régression linéaire exacte (moindres carrés). Solution optimale garantie."""
+    mu    = Z_tr.mean(0)
+    sigma = Z_tr.std(0) + 1e-8
+    Zn_tr = (Z_tr - mu) / sigma
+    Zn_vl = (Z_vl - mu) / sigma
+    W, _, _, _ = np.linalg.lstsq(
+        np.c_[Zn_tr, np.ones(len(Zn_tr))], S_tr, rcond=None
+    )
+    return np.c_[Zn_vl, np.ones(len(Zn_vl))] @ W
+
+
+def _run_mlp_probe(head, Zt, St, Zv, n_epochs, lr=3e-4, batch_size=1024):
+    """Adam avec mini-batches — nécessaire pour converger sur >10K samples."""
+    from torch.utils.data import TensorDataset, DataLoader
+    opt    = optim.Adam(head.parameters(), lr=lr)
+    loader = DataLoader(TensorDataset(Zt, St), batch_size=batch_size, shuffle=True)
     for _ in range(n_epochs):
-        head.train(); opt.zero_grad()
-        F.mse_loss(head(Zt), St).backward(); opt.step()
+        head.train()
+        for zb, sb in loader:
+            opt.zero_grad()
+            F.mse_loss(head(zb), sb).backward()
+            opt.step()
     head.eval()
     with torch.no_grad():
         return head(Zv).cpu().numpy()
 
 
-# ── 1. Linear probe + MLP probe ────────────────────────────────────────────────
+# ── 1. Linear probe (lstsq) + MLP probe ───────────────────────────────────────
 
-def linear_probe(model, train_loader, val_loader, device, n_epochs=50):
+def linear_probe(model, train_loader, val_loader, device, n_epochs=200):
     print("\n── Linear probe  vs  MLP probe ──────────────────────────")
     Z_tr, S_tr, _ = collect_embeddings(model, train_loader, device)
     Z_va, S_va, _ = collect_embeddings(model, val_loader,   device)
 
-    D       = Z_tr.shape[1]
+    D        = Z_tr.shape[1]
     n_states = S_tr.shape[1]
+
+    # Probe linéaire — lstsq exact (solution optimale, indépendante du lr/epochs)
+    lin_preds = _lstsq_probe(Z_tr, S_tr, Z_va)
+    r2s_lin   = compute_r2s(lin_preds, S_va)
+
+    # Probe MLP 2 couches — Adam, mesure l'accessibilité non-linéaire
     Zt = torch.from_numpy(Z_tr).float().to(device)
     St = torch.from_numpy(S_tr).float().to(device)
     Zv = torch.from_numpy(Z_va).float().to(device)
-
-    # Probe linéaire
-    lin_preds = _run_probe(nn.Linear(D, n_states).to(device), Zt, St, Zv, n_epochs)
-    r2s_lin   = compute_r2s(lin_preds, S_va)
-
-    # Probe MLP 2 couches
     mlp = nn.Sequential(
         nn.Linear(D, 256), nn.ReLU(),
         nn.Linear(256, 256), nn.ReLU(),
         nn.Linear(256, n_states),
     ).to(device)
-    mlp_preds = _run_probe(mlp, Zt, St, Zv, n_epochs * 4, lr=3e-4)
+    mlp_preds = _run_mlp_probe(mlp, Zt, St, Zv, n_epochs)
     r2s_mlp   = compute_r2s(mlp_preds, S_va)
 
     r2_lin = float(np.mean(r2s_lin))
