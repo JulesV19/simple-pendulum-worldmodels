@@ -1,18 +1,54 @@
 # JEPA vs Autoencoder World Model
 
 Comparaison empirique de deux approches de world model sur pendule simple :
-**JEPA** (prédiction dans l'espace latent) contre une **architecture autoencoder classique** (reconstruction pixel).
+**JEPA** (prédiction dans l'espace latent) contre une **AE** (reconstruction pixel).
 
-| | **JEPA** | **AE (Rec)** |
-|---|---|---|
-| Supervision | espace latent (cosine + MSE) | pixel space (MSE + VGG + FFT) |
-| Target encoder | EMA | aucun |
-| Décodeur | entraîné séparément | intégré, entraîné conjointement |
-| Probe R²(θ) | 0.966 | 0.976 |
-| Probe R²(ω) | 0.918 | 0.905 |
+---
 
-> **Références :**
-> Maes et al., *"Le World Model"*, arXiv:2603.19312 (2026) · LeCun, *"A Path Towards Autonomous Machine Intelligence"* (2022) · Assran et al., *I-JEPA* (CVPR 2023)
+## Demos — dreaming 60 steps depuis 2 frames réelles
+
+| JEPA | AE |
+|:---:|:---:|
+| ![JEPA dream](visuals/jepa_demo.gif) | ![AE dream](visuals/ae_demo.gif) |
+| real → imagined | real → imagined |
+
+```bash
+python3 jepa/imagine.py --gif --traj-idx 0 --n-steps 60 --fps 15 --out visuals/jepa_demo.gif
+python3 rec/imagine.py  --gif --traj-idx 0 --n-steps 60 --fps 15 --out visuals/ae_demo.gif
+```
+
+---
+
+## Espace latent R³ (PCA, 40 trajectoires)
+
+Chaque courbe = une trajectoire.
+
+**Coloré par θ (position angulaire)**
+![Latent space θ](visuals/latent3d_theta.png)
+
+**Coloré par ω (vitesse angulaire)**
+![Latent space ω](visuals/latent3d_omega.png)
+
+```bash
+python3 tools/visualize_latent_3d.py --model both --color theta --save visuals/latent3d_theta.png
+python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/latent3d_omega.png
+```
+
+---
+
+## Résultats (probe linéaire z → θ, ω — val set)
+
+```
+                    JEPA      AE
+R²(θ)             0.966     0.976    AE +1pt   — AE encode mieux la position
+R²(ω)             0.918     0.905    JEPA +1pt — JEPA encode mieux la vitesse
+R²(mean)          0.942     0.940    quasi-identique
+```
+
+R²(ω) est la métrique clé : sans supervision pixel, JEPA est contraint d'encoder
+la vitesse angulaire pour résoudre le rollout. L'AE l'encode par effet de bord.
+
+> **Limite :** une seule run, batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur).
 
 ---
 
@@ -30,8 +66,6 @@ Comparaison empirique de deux approches de world model sur pendule simple :
 
 loss = (1/K) Σ [ cosine(ẑ_{t+k}, z*_{t+k}) + α·MSE ] + λ·SIGReg
 ```
-
-Le MLP ne voit que `z_t` — sans `ω` dans `z`, prédire `z_{t+1}` est impossible.
 
 ### AE — `models/rec/model.py`
 
@@ -64,179 +98,37 @@ Pendule simple, 64×64 px, `states = [θ, ω]`.
 
 ```bash
 python3 data/generate.py --n_trajectories 2000 --n_frames 500
-# → dataset/pendulum/traj_XXXX.npz  :  frames (T,H,W,3)  +  states (T,2)
-```
-
-```bash
 python3 tools/browse.py        # navigateur interactif + portrait de phase
 python3 tools/visualize.py     # grid de trajectoires
 ```
 
 ---
 
-## JEPA
-
-### Entraînement
+## Entraînement
 
 ```bash
-# Local
-python3 jepa/train.py
+# JEPA
 python3 jepa/train.py --lam 0.5 --rollout-k 10 --epochs 50
-python3 jepa/train.py --checkpoint checkpoints/jepa/lewm_best.pt   # resume
-
-# Décodeur séparé (encodeur gelé)
 python3 jepa/train_decoder.py --checkpoint checkpoints/jepa/lewm_best.pt
-```
 
-Colab : `jepa/notebooks/train_colab.ipynb` · `jepa/notebooks/train_decoder_colab.ipynb`
-
-**Hyperparamètres clés :**
-
-| Paramètre | Valeur | Note |
-|---|---|---|
-| `embed_dim` | 128 | dimension latente |
-| `rollout_k` | 10 | ~0.5 s — aligné avec AE |
-| `lam` | 0.5 | poids SIGReg |
-| `mse_coef` | 0.1 | poids MSE dans pred_loss |
-| `ema_momentum` | 0.996 | EMA target encoder |
-
-### Inférence
-
-```bash
-python3 jepa/imagine.py
-python3 jepa/imagine.py --n-steps 200 --gif
-python3 jepa/eval.py --checkpoint checkpoints/jepa/lewm_best.pt
-```
-
----
-
-## AE (LeWorldModelRec)
-
-### Entraînement
-
-```bash
-# Local
-python3 rec/train.py
+# AE
 python3 rec/train.py --epochs 50 --batch-size 16
-python3 rec/train.py --checkpoint checkpoints/rec/lewm_rec_best.pt   # resume
 ```
 
-Colab : `rec/notebooks/train_colab.ipynb`
+Colab : `jepa/notebooks/` · `rec/notebooks/`
 
-**Hyperparamètres clés :**
+---
 
-| Paramètre | Valeur | Note |
-|---|---|---|
-| `embed_dim` | 128 | dimension latente |
-| `rollout_k` | 10 | horizon de prédiction — aligné avec JEPA |
-| `rec_coef` | 1.0 | poids reconstruction MSE |
-| `perceptual_coef` | 0.1 | poids VGG16 — anti-flou |
-| `freq_coef` | 0.05 | poids FFT — anti-flou |
-| `batch_size` | 16 | réduit vs JEPA (décodeur dans le graph) |
-
-### Inférence
+## Évaluation
 
 ```bash
-python3 rec/imagine.py                  # réel / reconstruction / imaginé
-python3 rec/imagine.py --n-steps 200 --gif
+python3 eval/probe.py --compare                          # R²(θ,ω) JEPA vs AE
+python3 eval/probe.py --compare --label-frac 0.1         # sample efficiency
+python3 eval/compare.py                                  # viewer côte-à-côte
+python3 tools/visualize_latent_3d.py --model both        # espace latent interactif
 ```
 
 ---
 
-## Évaluation comparative
-
-### Probe linéaire z → (θ, ω)
-
-```bash
-# Comparaison directe sur les deux meilleurs checkpoints
-python3 eval/probe.py --compare
-
-# Probe sur un modèle seul
-python3 eval/probe.py --model jepa --checkpoint checkpoints/jepa/lewm_best.pt
-python3 eval/probe.py --model rec  --checkpoint checkpoints/rec/lewm_rec_best.pt
-
-# Sample efficiency (probe entraîné sur 10% des données)
-python3 eval/probe.py --compare --label-frac 0.1
-
-# Sweep sur un dossier de checkpoints → courbe R² vs epoch
-python3 eval/probe.py --model jepa --checkpoint-dir checkpoints/jepa/ --plot
-```
-
-Le R²(ω) est la métrique clé : il mesure si la dynamique est encodée dans z,
-indépendamment de la qualité visuelle.
-
-### Visualisation côte-à-côte
-
-```bash
-python3 eval/compare.py                 # viewer JEPA vs AE + stats
-python3 eval/compare.py --probe-trajs 0 # sans recalcul du probe
-python3 eval/compare.py --gif
-```
-
-### Scatter plots
-
-```bash
-python3 eval/scatter.py --checkpoint checkpoints/jepa/lewm_best.pt
-```
-
----
-
-## Structure
-
-```
-WorldModel/
-├── data/
-│   ├── dataset.py          PendulumSeqDataset, dataloaders
-│   └── generate.py         génération dataset
-│
-├── models/
-│   ├── encoder.py          CNN 4 couches (partagé)
-│   ├── decoder.py          ConvTranspose 4 couches (partagé)
-│   ├── sigreg.py           SIGReg regularizer
-│   ├── losses.py           PerceptualLoss (VGG16), FrequencyLoss (FFT)
-│   ├── jepa/model.py       LeWorldModel
-│   └── rec/model.py        LeWorldModelRec
-│
-├── jepa/
-│   ├── train.py
-│   ├── train_decoder.py
-│   ├── imagine.py
-│   ├── eval.py
-│   └── notebooks/
-│
-├── rec/
-│   ├── train.py
-│   ├── imagine.py
-│   └── notebooks/
-│
-├── eval/
-│   ├── probe.py            comparaison R²(θ,ω)
-│   ├── scatter.py          scatter linéaire vs MLP
-│   └── compare.py          viewer côte-à-côte + benchmark
-│
-├── tools/
-│   ├── browse.py           navigateur dataset
-│   └── visualize.py        viewer trajectoires
-│
-└── checkpoints/
-    ├── jepa/               lewm_best.pt, decoder_best.pt
-    └── rec/                lewm_rec_best.pt
-```
-
----
-
-## Résultats probe (val set, 200 epochs)
-
-```
-                    JEPA      AE
-R²(θ)             0.966     0.976    AE +1pt   — AE encode mieux la position
-R²(ω)             0.918     0.905    JEPA +1pt — JEPA encode mieux la vitesse
-R²(mean)          0.942     0.940    quasi-identique
-```
-
-R²(ω) est la signature de la qualité dynamique : JEPA encode ω sans supervision
-pixel grâce au rollout_k=10 qui force le predictor à résoudre la dynamique.
-L'AE encode ω par effet de bord du diff de frames, mais avec moins de pression.
-
-> **Limite de cette comparaison :** rollout_k=10 (aligné), batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur).
-> Pour une comparaison contrôlée, aligner ces hyperparamètres et tracer R² vs gradient steps.
+> **Références :**
+> Maes et al., *"Le World Model"*, arXiv:2603.19312 (2026) · LeCun, *"A Path Towards Autonomous Machine Intelligence"* (2022) · Assran et al., *I-JEPA* (CVPR 2023)

@@ -16,12 +16,16 @@ dataset/
 # Checkpoints (binaires lourds — committer manuellement si besoin)
 checkpoints/
 
-# Artefacts générés
-visuals/
-*.png
-*.gif
+# Artefacts générés (sauf visuels README)
 *.txt
 *.json
+
+# Visuels générés dynamiquement — exclus sauf ceux listés dans visuals/.gitkeep
+visuals/*
+!visuals/jepa_demo.gif
+!visuals/ae_demo.gif
+!visuals/latent3d_theta.png
+!visuals/latent3d_omega.png
 
 # macOS
 .DS_Store

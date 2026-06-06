@@ -364,7 +364,7 @@ def main(args):
         real_np, dream_np = build_dream(
             model, decoder, frames.unsqueeze(0), n_steps, device)
         Path(args.vis_dir).mkdir(parents=True, exist_ok=True)
-        gif_path = f"{args.vis_dir}/dream_{idx:04d}.gif"
+        gif_path = args.out if args.out else f"{args.vis_dir}/dream_{idx:04d}.gif"
         save_gif(real_np, dream_np, N_SEED - 1, gif_path, args.fps)
     else:
         DreamViewer(model, decoder, dataset, args, device)
@@ -380,4 +380,5 @@ if __name__ == "__main__":
     parser.add_argument("--fps",         type=int,  default=12)
     parser.add_argument("--gif",         action="store_true")
     parser.add_argument("--vis-dir",     default="visuals")
+    parser.add_argument("--out",         default=None, help="chemin GIF exact (optionnel)")
     main(parser.parse_args())

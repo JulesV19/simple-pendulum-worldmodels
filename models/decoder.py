@@ -7,13 +7,13 @@ class Decoder(nn.Module):
     """
     Symétrique de ContextEncoder : z ∈ R^embed_dim → frame ∈ [0,1]^(3, 64, 64).
 
-    z est normalisé en entrée (L2) pour que le décodeur soit invariant à la
-    magnitude — essentiel pendant le dreaming où le predictor peut faire dériver
-    la norme de z au fil des steps.
-
     Architecture miroir du CNN encoder :
-      L2-norm → FC → reshape (256, 4, 4)
-      → ConvTranspose ×4 → (3, 64, 64)
+      L2-norm → FC → reshape (256, 4, 4) → ConvTranspose ×4 → (3, 64, 64)
+
+    La normalisation L2 est intentionnelle : SIGReg force z ~ N(0, I), donc
+    la norme de z suit une distribution χ concentrée autour de √D — variation
+    non-informatrice qui ne corrèle pas avec l'état physique. Normaliser
+    supprime ce bruit et donne au décodeur un signal direction-only plus propre.
     """
 
     def __init__(self, embed_dim: int = 128):
@@ -43,7 +43,7 @@ class Decoder(nn.Module):
             B, T, D = z.shape
             z = z.reshape(B * T, D)
 
-        z = F.normalize(z, dim=-1)             # invariant à la magnitude
+        z = F.normalize(z, dim=-1)
         n = z.shape[0]
         x = self.fc(z).view(n, 256, 4, 4)
         out = self.deconv(x)                   # (B(*T), 3, 64, 64)

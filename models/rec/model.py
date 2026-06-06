@@ -41,9 +41,11 @@ class LeWorldModelRec(nn.Module):
            MSE + perceptual + freq sur decode(z_roll) vs frame_{t+k}
       4. SIGReg        : force z ~ N(0, I)
 
-    Anti-flou :
-      perceptual_coef > 0 → PerceptualLoss (VGG16, requires torchvision)
-      freq_coef       > 0 → FrequencyLoss  (FFT, sans dépendances)
+    Anti-collapse :
+      Sans perceptual_coef > 0, l'encodeur s'effondre : la MSE pixel seule
+      est minimisée par une image moyenne floue constante, ce qui annule le
+      gradient vers l'encodeur. VGG16 est donc nécessaire, pas optionnel.
+      freq_coef > 0 → FrequencyLoss (FFT) complémentaire, sans dépendances.
 
     Différence vs LeWorldModel :
       - Pas de target encoder EMA → pas de collapse silencieux possible

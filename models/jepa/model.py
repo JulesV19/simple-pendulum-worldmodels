@@ -59,8 +59,8 @@ class LeWorldModel(nn.Module):
         embed_dim:    int   = 128,
         hidden_dim:   int   = 512,
         lam:          float = 0.1,
-        mse_coef:     float = 0.1,   # poids du terme MSE pour contraindre la magnitude de z
-        norm_coef:    float = 1.0,   # poids de la conservation de norme pendant le rollout
+        mse_coef:     float = 0.1,   # poids du terme MSE dans la pred loss (contrainte magnitude)
+        norm_coef:    float = 1.0,   # conservation de norme z_roll vs z_tgt — redondant si SIGReg actif
         n_proj:       int   = 512,
         ema_momentum: float = 0.996,
         rollout_k:    int   = 5,     # steps de prédiction pour forcer ω dans z

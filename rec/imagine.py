@@ -169,18 +169,16 @@ class DreamViewer:
         )
 
         gs = gridspec.GridSpecFromSubplotSpec(
-            1, 4, subplot_spec=outer[0],
-            wspace=0.07, width_ratios=[1, 1, 1, 0.55],
+            1, 3, subplot_spec=outer[0],
+            wspace=0.07, width_ratios=[1, 1, 0.55],
         )
 
         self.ax_real  = self.fig.add_subplot(gs[0, 0])
-        self.ax_rec   = self.fig.add_subplot(gs[0, 1])
-        self.ax_dream = self.fig.add_subplot(gs[0, 2])
-        self.ax_info  = self.fig.add_subplot(gs[0, 3])
+        self.ax_dream = self.fig.add_subplot(gs[0, 1])
+        self.ax_info  = self.fig.add_subplot(gs[0, 2])
 
         for ax, title, col in [
             (self.ax_real,  "Réel",                   C_REAL),
-            (self.ax_rec,   "Reconstruction",          C_REC),
             (self.ax_dream, "Imaginé (z rollout)",     C_DREAM),
         ]:
             ax.set_facecolor(DARK)
@@ -223,7 +221,6 @@ class DreamViewer:
 
         blank = np.zeros((64, 64, 3), dtype=np.uint8)
         self.im_real  = self.ax_real.imshow(blank,  interpolation="nearest")
-        self.im_rec   = self.ax_rec.imshow(blank,   interpolation="nearest")
         self.im_dream = self.ax_dream.imshow(blank, interpolation="nearest")
 
         self._update_title()
@@ -235,7 +232,6 @@ class DreamViewer:
     def _draw(self, t):
         real_idx = self.real_start + t
         self.im_real.set_data(self.real_np[min(real_idx,  len(self.real_np)  - 1)])
-        self.im_rec.set_data(self.rec_np[min(real_idx,    len(self.rec_np)   - 1)])
         self.im_dream.set_data(self.dream_np[min(t,       len(self.dream_np) - 1)])
         self.slider.eventson = False
         self.slider.set_val(t)
@@ -284,7 +280,7 @@ class DreamViewer:
             self._draw(self.t)
             if self.t % 5 == 0:
                 self._update_info()
-        return [self.im_real, self.im_rec, self.im_dream]
+        return [self.im_real, self.im_dream]
 
     def _start(self):
         interval = max(50, int(1000 / self.args.fps))
@@ -329,29 +325,26 @@ class DreamViewer:
 def save_gif(real_np, rec_np, dream_np, real_start, path, fps):
     T = min(len(real_np) - real_start, len(dream_np))
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4.5), facecolor=DARK)
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4.5), facecolor=DARK)
     fig.patch.set_facecolor(DARK)
 
     for ax, title, col in zip(axes,
-                               ["Réel", "Reconstruction", "Imaginé"],
-                               [C_REAL, C_REC, C_DREAM]):
+                               ["Réel", "Imaginé"],
+                               [C_REAL, C_DREAM]):
         ax.set_facecolor(DARK); ax.axis("off")
         ax.set_title(title, color=col, fontsize=12)
 
     blank = np.zeros((64, 64, 3), dtype=np.uint8)
     im_r = axes[0].imshow(blank, interpolation="nearest")
-    im_c = axes[1].imshow(blank, interpolation="nearest")
-    im_d = axes[2].imshow(blank, interpolation="nearest")
+    im_d = axes[1].imshow(blank, interpolation="nearest")
     txt  = fig.text(0.5, 0.02, "t = 0", ha="center", color="#999", fontsize=9)
     plt.tight_layout(rect=[0, 0.04, 1, 1])
 
     def update(t):
-        idx = min(real_start + t, len(real_np) - 1)
-        im_r.set_data(real_np[idx])
-        im_c.set_data(rec_np[idx])
+        im_r.set_data(real_np[min(real_start + t, len(real_np) - 1)])
         im_d.set_data(dream_np[min(t, len(dream_np) - 1)])
         txt.set_text(f"t = {t}  ({t * 0.05:.2f} s)")
-        return [im_r, im_c, im_d, txt]
+        return [im_r, im_d, txt]
 
     anim = animation.FuncAnimation(fig, update, frames=T,
                                    interval=int(1000 / fps), blit=True)
@@ -376,7 +369,7 @@ def main(args):
         real_np, rec_np, dream_np = build_dream(
             model, frames.unsqueeze(0), n_steps, device)
         Path(args.vis_dir).mkdir(parents=True, exist_ok=True)
-        gif_path = f"{args.vis_dir}/dream_rec_{idx:04d}.gif"
+        gif_path = args.out if args.out else f"{args.vis_dir}/dream_rec_{idx:04d}.gif"
         save_gif(real_np, rec_np, dream_np, N_SEED - 1, gif_path, args.fps)
     else:
         DreamViewer(model, dataset, args, device)
@@ -391,4 +384,5 @@ if __name__ == "__main__":
     parser.add_argument("--fps",         type=int, default=12)
     parser.add_argument("--gif",         action="store_true")
     parser.add_argument("--vis-dir",     default="visuals")
+    parser.add_argument("--out",         default=None, help="chemin GIF exact (optionnel)")
     main(parser.parse_args())
