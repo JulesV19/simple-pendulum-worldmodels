@@ -49,17 +49,20 @@ python3 tools/dream_explorer.py --model rec
 
 ## Espace latent R³ (PCA, 40 trajectoires)
 
-Chaque courbe = une trajectoire.
+Chaque courbe = une trajectoire. Couleur = θ (position angulaire).
 
-**Coloré par θ (position angulaire)**
-![Latent space θ](visuals/latent3d_theta.png)
-
-**Coloré par ω (vitesse angulaire)**
-![Latent space ω](visuals/latent3d_omega.png)
+| JEPA | AE |
+|:---:|:---:|
+| ![JEPA latent 3D](visuals/latent3d_jepa.gif) | ![AE latent 3D](visuals/latent3d_ae.gif) |
 
 > Les trajectoires AE forment des courbes quasi-fermées : quand θ approche ±π, les frames se ressemblent visuellement (pendule proche du sommet), donc l'AE les rapproche dans l'espace latent. JEPA n'a pas cette information pixel — et comme le dataset ne contient que des oscillations (pas de tour complet), il n'apprend jamais que +π et −π sont la même position physique, d'où des courbes ouvertes.
 
 ```bash
+# GIF rotation 360°
+python3 tools/visualize_latent_3d.py --model jepa --color theta --gif visuals/latent3d_jepa.gif
+python3 tools/visualize_latent_3d.py --model rec  --color theta --gif visuals/latent3d_ae.gif
+
+# Vues statiques (grille 4 angles)
 python3 tools/visualize_latent_3d.py --model both --color theta --save visuals/latent3d_theta.png
 python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/latent3d_omega.png
 ```

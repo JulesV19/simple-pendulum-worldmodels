@@ -24,6 +24,8 @@ checkpoints/
 visuals/*
 !visuals/jepa_demo.gif
 !visuals/ae_demo.gif
+!visuals/latent3d_jepa.gif
+!visuals/latent3d_ae.gif
 !visuals/latent3d_theta.png
 !visuals/latent3d_omega.png
 !visuals/dream_explorer_jepa.gif

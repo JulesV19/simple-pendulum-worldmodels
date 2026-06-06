@@ -7,19 +7,23 @@ Couleur = θ (angle du pendule) via colormap circulaire HSV.
 
 Mode interactif (défaut) : fenêtre matplotlib rotatable à la souris.
 Mode sauvegarde (--save)  : grille 4 angles de vue → PNG.
+Mode GIF (--gif)          : rotation 360° → GIF animé.
 
 Usage :
   # JEPA
   python3 tools/visualize_latent_3d.py --model jepa
   python3 tools/visualize_latent_3d.py --model jepa --color omega
   python3 tools/visualize_latent_3d.py --model jepa --save visuals/latent3d_jepa.png
+  python3 tools/visualize_latent_3d.py --model jepa --gif  visuals/latent3d_jepa.gif
 
   # AE
   python3 tools/visualize_latent_3d.py --model rec
   python3 tools/visualize_latent_3d.py --model rec  --save visuals/latent3d_rec.png
+  python3 tools/visualize_latent_3d.py --model rec  --gif  visuals/latent3d_rec.gif
 
   # Comparaison côte à côte
   python3 tools/visualize_latent_3d.py --model both --save visuals/latent3d_compare.png
+  python3 tools/visualize_latent_3d.py --model both --gif  visuals/latent3d_compare.gif
 """
 
 import sys
@@ -379,6 +383,77 @@ def save_figure_both(trajs_j, states_j, var_j,
     print(f"Sauvegardé → {out_path}")
 
 
+# ── GIF 360° ──────────────────────────────────────────────────────────────────
+
+def save_gif_single(trajs_pc, trajs_st, var, title, color_by, out_path,
+                    n_frames=72, fps=15, elev=20):
+    """Rotation 360° d'un seul modèle → GIF animé."""
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    fig = plt.figure(figsize=(8, 7), facecolor=DARK)
+    ax  = fig.add_subplot(111, projection="3d", facecolor=DARK2)
+
+    sc, norm, cmap, cbar_label, omega_95p = draw_latent_3d(
+        ax, trajs_pc, trajs_st, var, title, color_by=color_by)
+    add_colorbar(fig, sc, norm, cmap, cbar_label, ax, omega_95p=omega_95p)
+    fig.suptitle(f"Espace latent R³ — {title}", color=WHITE, fontsize=12, y=0.98)
+    plt.tight_layout()
+
+    azimuths = np.linspace(0, 360, n_frames, endpoint=False)
+
+    def update(frame):
+        ax.view_init(elev=elev, azim=float(azimuths[frame]))
+        return []
+
+    ani = FuncAnimation(fig, update, frames=n_frames,
+                        interval=int(1000 / fps), blit=False)
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    ani.save(out_path, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"GIF sauvegardé → {out_path}")
+
+
+def save_gif_both(trajs_j, states_j, var_j,
+                  trajs_r, states_r, var_r,
+                  color_by, out_path,
+                  n_frames=72, fps=15, elev=20):
+    """Rotation 360° JEPA vs AE côte à côte → GIF animé."""
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    fig = plt.figure(figsize=(16, 7), facecolor=DARK)
+    ax_j = fig.add_subplot(121, projection="3d", facecolor=DARK2)
+    ax_r = fig.add_subplot(122, projection="3d", facecolor=DARK2)
+
+    sc_j, norm_j, cmap_j, label_j, omega_j = draw_latent_3d(
+        ax_j, trajs_j, states_j, var_j, "JEPA", color_by=color_by)
+    sc_r, norm_r, cmap_r, label_r, omega_r = draw_latent_3d(
+        ax_r, trajs_r, states_r, var_r, "AE", color_by=color_by)
+
+    add_colorbar(fig, sc_j, norm_j, cmap_j, label_j, ax_j, omega_95p=omega_j)
+    add_colorbar(fig, sc_r, norm_r, cmap_r, label_r, ax_r, omega_95p=omega_r)
+
+    fig.suptitle(f"Espace latent R³ — JEPA vs AE  [coloré par {label_j}]",
+                 color=WHITE, fontsize=13, y=0.98)
+    plt.tight_layout()
+
+    azimuths = np.linspace(0, 360, n_frames, endpoint=False)
+
+    def update(frame):
+        az = float(azimuths[frame])
+        ax_j.view_init(elev=elev, azim=az)
+        ax_r.view_init(elev=elev, azim=az)
+        return []
+
+    ani = FuncAnimation(fig, update, frames=n_frames,
+                        interval=int(1000 / fps), blit=False)
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    ani.save(out_path, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"GIF sauvegardé → {out_path}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args):
@@ -387,7 +462,7 @@ def main(args):
         else torch.device("cpu")
     print(f"Device : {device}")
 
-    if args.save:
+    if args.save or args.gif:
         matplotlib.use("Agg")
 
     do_jepa = args.model in ("jepa", "both")
@@ -414,7 +489,19 @@ def main(args):
         print(f"  Variance expliquée : PC1={var_r[0]:.1%}  PC2={var_r[1]:.1%}  PC3={var_r[2]:.1%}")
         del model_r
 
-    if args.save:
+    if args.gif:
+        if args.model == "both":
+            save_gif_both(trajs_j, states_j, var_j,
+                          trajs_r, states_r, var_r,
+                          args.color, args.gif,
+                          n_frames=args.n_frames, fps=args.fps)
+        elif do_jepa:
+            save_gif_single(trajs_j, states_j, var_j, label_j, args.color, args.gif,
+                            n_frames=args.n_frames, fps=args.fps)
+        else:
+            save_gif_single(trajs_r, states_r, var_r, label_r, args.color, args.gif,
+                            n_frames=args.n_frames, fps=args.fps)
+    elif args.save:
         if args.model == "both":
             save_figure_both(trajs_j, states_j, var_j,
                              trajs_r, states_r, var_r,
@@ -448,4 +535,10 @@ if __name__ == "__main__":
                    help="Frames par trajectoire")
     p.add_argument("--save",        default=None,
                    help="Chemin PNG (mode non-interactif)")
+    p.add_argument("--gif",         default=None,
+                   help="Chemin GIF (rotation 360°)")
+    p.add_argument("--n-frames",    type=int, default=72,
+                   help="Nombre de frames dans le GIF (défaut : 72 → ~5s à 15fps)")
+    p.add_argument("--fps",         type=int, default=15,
+                   help="Frames par seconde du GIF (défaut : 15)")
     main(p.parse_args())
