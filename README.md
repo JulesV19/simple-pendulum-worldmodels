@@ -29,6 +29,8 @@ Chaque courbe = une trajectoire.
 **Coloré par ω (vitesse angulaire)**
 ![Latent space ω](visuals/latent3d_omega.png)
 
+> Les trajectoires AE forment des courbes quasi-fermées : quand θ approche ±π, les frames se ressemblent visuellement (pendule proche du sommet), donc l'AE les rapproche dans l'espace latent. JEPA n'a pas cette information pixel — et comme le dataset ne contient que des oscillations (pas de tour complet), il n'apprend jamais que +π et −π sont la même position physique, d'où des courbes ouvertes.
+
 ```bash
 python3 tools/visualize_latent_3d.py --model both --color theta --save visuals/latent3d_theta.png
 python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/latent3d_omega.png
@@ -40,15 +42,12 @@ python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/l
 
 ```
                     JEPA      AE
-R²(θ)             0.966     0.976    AE +1pt   — AE encode mieux la position
-R²(ω)             0.918     0.905    JEPA +1pt — JEPA encode mieux la vitesse
-R²(mean)          0.942     0.940    quasi-identique
+R²(θ)             0.966     0.976
+R²(ω)             0.918     0.905
+R²(mean)          0.942     0.940
 ```
 
-R²(ω) est la métrique clé : sans supervision pixel, JEPA est contraint d'encoder
-la vitesse angulaire pour résoudre le rollout. L'AE l'encode par effet de bord.
-
-> **Limite :** une seule run, batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur).
+> Une seule run, batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur) — comparaison non contrôlée.
 
 ---
 
