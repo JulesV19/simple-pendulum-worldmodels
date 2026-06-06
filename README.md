@@ -5,7 +5,7 @@ Comparaison empirique de deux approches de world model sur pendule simple :
 
 ---
 
-## Demos — dreaming 60 steps depuis 2 frames réelles
+## Demos — dreaming 120 steps depuis 2 frames réelles
 
 | JEPA | AE |
 |:---:|:---:|
