@@ -26,6 +26,9 @@ visuals/*
 !visuals/ae_demo.gif
 !visuals/latent3d_theta.png
 !visuals/latent3d_omega.png
+!visuals/dream_explorer_jepa.gif
+!visuals/dream_explorer_ae.gif
+!visuals/separability.png
 
 # macOS
 .DS_Store

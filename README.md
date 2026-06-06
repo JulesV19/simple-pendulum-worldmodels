@@ -26,6 +26,27 @@ python3 rec/imagine.py  --gif --traj-idx 0 --n-steps 120 --fps 15 --out visuals/
 
 ---
 
+## Dream Explorer — espace latent + rêve
+
+Trajectoire dans l'espace latent R³ (PCA sur 20 trajectoires réelles) animée simultanément avec la frame décodée. La traîne colorée montre les derniers pas du rêve.
+
+| JEPA | AE |
+|:---:|:---:|
+| ![JEPA dream explorer](visuals/dream_explorer_jepa.gif) | ![AE dream explorer](visuals/dream_explorer_ae.gif) |
+
+```bash
+python3 tools/dream_explorer.py --model jepa --traj-idx 124 --save-gif visuals/dream_explorer_jepa.gif
+python3 tools/dream_explorer.py --model rec  --traj-idx 124 --save-gif visuals/dream_explorer_ae.gif
+```
+
+Viewer interactif (sliders épisode / temps, rotation 3D) :
+```bash
+python3 tools/dream_explorer.py --model jepa
+python3 tools/dream_explorer.py --model rec
+```
+
+---
+
 ## Espace latent R³ (PCA, 40 trajectoires)
 
 Chaque courbe = une trajectoire.
@@ -45,18 +66,18 @@ python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/l
 
 ---
 
-## Résultats (probe linéaire z → θ, ω — val set)
+## Séparabilité de l'espace latent
 
-> Les deux modèles ne sont pas strictement comparables : l'AE entraîne encodeur et décodeur conjointement avec VGG16 comme signal de supervision, tandis que le décodeur JEPA est entraîné séparément sur un encodeur gelé. Les gradients reçus par l'encodeur, leur nature et leur quantité diffèrent structurellement.
+![Séparabilité](visuals/separability.png)
 
+Encodeur gelé, sonde linéaire (lstsq) et MLP 2×256 entraînés sur z → (θ, ω). Les deux modèles donnent R²(θ) ≈ 0.97–0.98 et R²(ω) ≈ 0.98 en linéaire — l'état physique est directement lisible dans z. Le MLP remonte θ à ~1.000 pour les deux, révélant une légère courbure résiduelle ; l'écart lin→MLP reste faible et identique entre JEPA et AE, malgré des supervisions très différentes.
+
+> Une seule run par modèle, conditions non contrôlées (batch_size, supervision VGG) — chiffres indicatifs.
+
+```bash
+python3 eval/scatter.py --compare --save visuals/separability.png
+python3 eval/probe.py --compare                   # chiffres détaillés + gap lin→MLP
 ```
-                    JEPA      AE
-R²(θ)             0.966     0.976
-R²(ω)             0.918     0.905
-R²(mean)          0.942     0.940
-```
-
-> Une seule run, batch_size=32 (JEPA) vs 16 (AE — contrainte mémoire décodeur) — comparaison non contrôlée.
 
 ---
 

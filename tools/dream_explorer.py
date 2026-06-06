@@ -17,6 +17,10 @@ Usage :
   python3 tools/dream_explorer.py --model jepa
   python3 tools/dream_explorer.py --model rec
   python3 tools/dream_explorer.py --model jepa --n-episodes 30 --n-steps 120
+
+  # Export GIF (même épisode que les autres visuels)
+  python3 tools/dream_explorer.py --model jepa --traj-idx 124 --save-gif visuals/dream_explorer_jepa.gif
+  python3 tools/dream_explorer.py --model rec  --traj-idx 124 --save-gif visuals/dream_explorer_ae.gif
 """
 
 import sys
@@ -26,12 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 import numpy as np
 import torch
-import torch.nn.functional as F
 import matplotlib
-matplotlib.use("TkAgg")          # backend interactif
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.widgets import Slider, Button
+import matplotlib.animation as animation
 from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
 
@@ -97,85 +99,80 @@ def load_rec(ckpt_path, device):
 
     epoch = ckpt.get("epoch", "?")
     print(f"  AE chargé  epoch={epoch}  embed_dim={a.get('embed_dim',128)}")
-    # Pour REC, le décodeur est intégré — on expose une interface commune
     return model, None, "AE", C_REC
 
 
 def decode_frame(z1d, model, decoder, model_type, device):
     """z (D,) → numpy (H, W, 3) dans [0,1]."""
-    z = torch.from_numpy(z1d).float().to(device).unsqueeze(0)  # (1, D)
+    z = torch.from_numpy(z1d).float().to(device).unsqueeze(0)
     with torch.no_grad():
         if model_type == "JEPA":
-            frame = decoder(z)           # (1, 3, H, W)
+            frame = decoder(z)
         else:
-            frame = model.decode(z)      # (1, 3, H, W)
+            frame = model.decode(z)
     return frame[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
 
 
 # ── Précomputation ────────────────────────────────────────────────────────────
 
 def precompute(model, decoder, model_type, dataset_dir, device,
-               n_episodes, n_steps, seed_frames=2, seq_len=100):
+               n_episodes, n_steps, seed_frames=2, seq_len=100,
+               traj_idx=None):
     """
-    Pour chaque épisode :
-      - Encode seed_frames frames réelles → z_0
-      - Rollout n_steps pas → z_dream (n_steps+1, D)
-      - Decode chaque z_t → frame (H, W, 3)
-    Retourne aussi les embeddings de fond (trajectoires réelles pour la PCA).
-    """
-    print(f"\n  Précomputation {n_episodes} épisodes × {n_steps} pas…")
-    ds = PendulumSeqDataset(dataset_dir, seq_len=max(seq_len, seed_frames + 2))
-    n_ep = min(n_episodes, len(ds))
+    Background PCA  : premiers n_episodes épisodes (0..n_episodes-1).
+    Dream featured  : traj_idx si fourni, sinon tous les n_episodes épisodes.
 
-    # ── Fond : encoder n_episodes trajectoires réelles pour la PCA ────────────
+    Retourne bg_pc, S_bg, dreams_z, dreams_pc, dreams_fr, Vt3, mu, var.
+    Si traj_idx est fourni, dreams_* contient un seul rêve (cet épisode).
+    """
+    ds    = PendulumSeqDataset(dataset_dir, seq_len=max(seq_len, seed_frames + 2))
+    n_bg  = min(n_episodes, len(ds))
+
+    # ── Fond : PCA sur n_bg épisodes ──────────────────────────────────────────
+    print(f"  Encodage fond ({n_bg} trajectoires)…")
     bg_z, bg_st = [], []
     with torch.no_grad():
-        for i in range(n_ep):
+        for i in range(n_bg):
             frames, states = ds[i]
-            z = model.encode(frames.unsqueeze(0).to(device))   # (1, T, D)
+            z = model.encode(frames.unsqueeze(0).to(device))
             bg_z.append(z[0].cpu().numpy())
             bg_st.append(states.numpy())
 
-    Z_bg = np.concatenate(bg_z,  axis=0)   # (N, D)
-    S_bg = np.concatenate(bg_st, axis=0)   # (N, 2)
+    Z_bg = np.concatenate(bg_z,  axis=0)
+    S_bg = np.concatenate(bg_st, axis=0)
 
-    # PCA 3D sur le fond
-    mu   = Z_bg.mean(0)
-    Zc   = Z_bg - mu
+    mu    = Z_bg.mean(0)
+    Zc    = Z_bg - mu
     n_fit = min(len(Zc), 12000)
     rng   = np.random.RandomState(0)
     idx   = rng.choice(len(Zc), n_fit, replace=False)
     _, sv, Vt = np.linalg.svd(Zc[idx], full_matrices=False)
-    Vt3   = Vt[:3]                         # (3, D) — axes PCA
+    Vt3   = Vt[:3]
     var   = (sv[:3] ** 2) / (sv ** 2).sum()
-
-    bg_pc = Zc @ Vt3.T                     # (N, 3)
+    bg_pc = Zc @ Vt3.T
     print(f"  PCA  PC1={var[0]:.1%}  PC2={var[1]:.1%}  PC3={var[2]:.1%}")
 
     # ── Rêves ─────────────────────────────────────────────────────────────────
-    dreams_z  = []   # list[ (n_steps+1, D) ]
-    dreams_pc = []   # list[ (n_steps+1, 3) ]
-    dreams_fr = []   # list[ (n_steps+1, H, W, 3) ]
+    dream_indices = [traj_idx] if traj_idx is not None else list(range(n_bg))
+    n_dreams = len(dream_indices)
+    print(f"  Génération rêve(s) ({n_dreams} épisode(s) × {n_steps} pas)…")
 
+    dreams_z, dreams_pc, dreams_fr = [], [], []
     with torch.no_grad():
-        for i in range(n_ep):
-            frames, _ = ds[i]
-            # Encoder les seed_frames premières frames pour avoir ω dans z_0
-            seed = frames[:seed_frames].unsqueeze(0).to(device)   # (1, S, 3, H, W)
-            z_seed = model.encode(seed)                           # (1, S, D)
-            z0 = z_seed[0, -1:]                                   # (1, D) — dernier z encodé
+        for ep_i, ep_idx in enumerate(dream_indices):
+            frames, _ = ds[ep_idx]
+            seed   = frames[:seed_frames].unsqueeze(0).to(device)
+            z_seed = model.encode(seed)
+            z0     = z_seed[0, -1:]
 
-            # Rollout
             traj_z = [z0.cpu().numpy()[0]]
-            z_cur  = z0.unsqueeze(0)      # (1, 1, D)
+            z_cur  = z0.unsqueeze(0)
             for _ in range(n_steps):
                 z_cur = model.predictor(z_cur)
                 traj_z.append(z_cur[0, 0].cpu().numpy())
 
-            traj_z  = np.array(traj_z)    # (n_steps+1, D)
-            traj_pc = (traj_z - mu) @ Vt3.T  # projeter dans le même espace PCA
-
-            # Décoder
+            traj_z  = np.array(traj_z)
+            traj_pc = (traj_z - mu) @ Vt3.T
             traj_fr = np.stack([
                 decode_frame(traj_z[t], model, decoder, model_type, device)
                 for t in range(len(traj_z))
@@ -185,19 +182,16 @@ def precompute(model, decoder, model_type, dataset_dir, device,
             dreams_pc.append(traj_pc)
             dreams_fr.append(traj_fr)
 
-            if (i + 1) % 5 == 0:
-                print(f"    épisode {i+1}/{n_ep}")
+            if (ep_i + 1) % 5 == 0 or n_dreams <= 5:
+                print(f"    épisode {ep_i+1}/{n_dreams}")
 
     print("  Précomputation terminée.")
-    return (bg_pc, S_bg,
-            dreams_z, dreams_pc, dreams_fr,
-            Vt3, mu, var)
+    return bg_pc, S_bg, dreams_z, dreams_pc, dreams_fr, Vt3, mu, var
 
 
-# ── Estimation des états via probe linéaire ───────────────────────────────────
+# ── Probe linéaire ────────────────────────────────────────────────────────────
 
 def fit_state_probe(Z_bg, S_bg):
-    """lstsq z → (θ, ω) pour annoter le rêve."""
     mu    = Z_bg.mean(0)
     sigma = Z_bg.std(0) + 1e-8
     Zn    = (Z_bg - mu) / sigma
@@ -208,12 +202,96 @@ def fit_state_probe(Z_bg, S_bg):
 
 
 def predict_states(z_traj, probe_mu, probe_sigma, probe_W):
-    """z_traj (T, D) → states_pred (T, 2)."""
     Zn = (z_traj - probe_mu) / probe_sigma
     return np.c_[Zn, np.ones(len(Zn))] @ probe_W
 
 
-# ── Figure interactive ────────────────────────────────────────────────────────
+# ── Export GIF ────────────────────────────────────────────────────────────────
+
+def save_gif(bg_pc, S_bg, dream_pc, dream_z, dream_fr, var,
+             model_color, model_name,
+             probe_mu, probe_sigma, probe_W,
+             out_path, fps=12, elev=22, azim=-55):
+    """
+    GIF animé : espace latent 3D (gauche) + frame décodée (droite).
+    La trajectoire du rêve s'anime pas à pas avec une traîne colorée.
+    """
+    n_frames = len(dream_fr)
+    norm_th  = Normalize(vmin=-np.pi, vmax=np.pi)
+    cmap_th  = plt.cm.hsv
+    states   = predict_states(dream_z, probe_mu, probe_sigma, probe_W)
+
+    fig = plt.figure(figsize=(10, 4.5), facecolor=DARK)
+    fig.patch.set_facecolor(DARK)
+
+    gs = gridspec.GridSpec(
+        1, 2, figure=fig,
+        width_ratios=[1.5, 1], wspace=0.03,
+        left=0.01, right=0.99, top=0.90, bottom=0.04,
+    )
+    ax3d  = fig.add_subplot(gs[0, 0], projection="3d")
+    ax_im = fig.add_subplot(gs[0, 1])
+
+    # ── Style 3D ──────────────────────────────────────────────────────────────
+    ax3d.set_facecolor(DARK2)
+    for pane in [ax3d.xaxis.pane, ax3d.yaxis.pane, ax3d.zaxis.pane]:
+        pane.fill = False
+        pane.set_edgecolor(GRID)
+    ax3d.tick_params(colors=DIM, labelsize=5.5)
+    ax3d.view_init(elev=elev, azim=azim)
+
+    # Fond : trajectoires réelles (très transparentes)
+    rng = np.random.RandomState(0)
+    sub = rng.choice(len(bg_pc), min(len(bg_pc), 5000), replace=False)
+    ax3d.scatter(bg_pc[sub, 0], bg_pc[sub, 1], bg_pc[sub, 2],
+                 c=S_bg[sub, 0], cmap=cmap_th, norm=norm_th,
+                 s=1.5, alpha=0.9, linewidths=0, depthshade=True)
+
+    # Trajectoire complète du rêve (très atténuée)
+    ax3d.plot(dream_pc[:, 0], dream_pc[:, 1], dream_pc[:, 2],
+              color=model_color, lw=0.7, alpha=0.2)
+
+    ax3d.set_xlabel(f"PC1 ({var[0]:.0%})", color=DIM, fontsize=5.5, labelpad=1)
+    ax3d.set_ylabel(f"PC2 ({var[1]:.0%})", color=DIM, fontsize=5.5, labelpad=1)
+    ax3d.set_zlabel(f"PC3 ({var[2]:.0%})", color=DIM, fontsize=5.5, labelpad=1)
+    ax3d.set_title("Latent space  R³", color=WHITE, fontsize=8, pad=5)
+
+    # Éléments animés
+    trail_line, = ax3d.plot([], [], [], color=model_color, lw=2.0, alpha=0.9)
+    dot = ax3d.scatter([], [], [], s=70, color="white",
+                       edgecolors=model_color, linewidths=1.8, zorder=10)
+
+    # ── Frame ─────────────────────────────────────────────────────────────────
+    ax_im.set_facecolor(DARK)
+    ax_im.axis("off")
+    ax_im.set_title(f"{model_name} — dreaming", color=model_color, fontsize=9, pad=5)
+    im_art = ax_im.imshow(dream_fr[0], interpolation="nearest", aspect="equal")
+
+    title = fig.text(0.5, 0.95, "t = 0", ha="center", color=DIM,
+                     fontsize=8, fontfamily="monospace")
+
+    TRAIL = 25   # longueur de la traîne
+
+    def update(t):
+        ts = max(0, t - TRAIL)
+        tp = dream_pc[ts:t+1]
+        if len(tp) > 1:
+            trail_line.set_data_3d(tp[:, 0], tp[:, 1], tp[:, 2])
+        dot._offsets3d = ([dream_pc[t, 0]], [dream_pc[t, 1]], [dream_pc[t, 2]])
+        im_art.set_data(dream_fr[t])
+        th, om = states[t, 0], states[t, 1]
+        title.set_text(f"t={t:3d}  θ={th:+.2f}  ω={om:+.2f}")
+        return [trail_line, dot, im_art, title]
+
+    anim = animation.FuncAnimation(fig, update, frames=n_frames,
+                                   interval=int(1000 / fps), blit=False)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    anim.save(out_path, fps=fps, writer="pillow")
+    plt.close(fig)
+    print(f"GIF sauvegardé : {out_path}")
+
+
+# ── Viewer interactif ────────────────────────────────────────────────────────
 
 def run_explorer(bg_pc, S_bg,
                  dreams_z, dreams_pc, dreams_fr,
@@ -238,7 +316,7 @@ def run_explorer(bg_pc, S_bg,
     ax_img = fig.add_subplot(gs[0, 1])
     ax_st  = fig.add_subplot(gs[1, 1])
 
-    # Sliders + bouton Play/Pause
+    from matplotlib.widgets import Slider, Button
     ax_sl_ep = fig.add_axes([0.10, 0.06, 0.74, 0.025], facecolor="#1e1e1e")
     ax_sl_t  = fig.add_axes([0.10, 0.02, 0.74, 0.025], facecolor="#1e1e1e")
     ax_btn   = fig.add_axes([0.87, 0.02, 0.10, 0.055], facecolor="#1e1e1e")
@@ -258,16 +336,14 @@ def run_explorer(bg_pc, S_bg,
     fig.suptitle(f"Dream Explorer — {model_name}  |  espace latent R³ + rêve",
                  color=WHITE, fontsize=11, y=0.97)
 
-    # ── 3D fond ────────────────────────────────────────────────────────────────
+    norm_th = Normalize(vmin=-np.pi, vmax=np.pi)
+    cmap_th = plt.cm.hsv
+
     ax3d.set_facecolor(DARK2)
     for pane in [ax3d.xaxis.pane, ax3d.yaxis.pane, ax3d.zaxis.pane]:
         pane.fill = False
         pane.set_edgecolor(GRID)
     ax3d.tick_params(colors=DIM, labelsize=6)
-
-    # Fond : trajectoires réelles colorées par θ, très transparentes
-    norm_th = Normalize(vmin=-np.pi, vmax=np.pi)
-    cmap_th = plt.cm.hsv
 
     rng = np.random.RandomState(0)
     sub = rng.choice(len(bg_pc), min(len(bg_pc), 6000), replace=False)
@@ -281,29 +357,24 @@ def run_explorer(bg_pc, S_bg,
     ax3d.set_title("Espace latent  (fond=réel · courbe=rêve · coloré par θ)",
                    color=WHITE, fontsize=8, pad=6)
 
-    # Éléments dynamiques (rêve)
     dream_line,  = ax3d.plot([], [], [], color=model_color, lw=1.5, alpha=0.9)
     dream_dot    = ax3d.scatter([], [], [], color="white", s=55, zorder=10,
                                 edgecolors=model_color, linewidths=1.5)
     dream_scatter = ax3d.scatter([], [], [], c=[], cmap=cmap_th, norm=norm_th,
                                  s=14, alpha=0.9, linewidths=0, depthshade=False)
 
-    # ── Image ──────────────────────────────────────────────────────────────────
     ax_img.set_facecolor(DARK2)
     ax_img.axis("off")
-    H, W = dreams_fr[0][0].shape[:2]
-    im_artist = ax_img.imshow(dreams_fr[0][0], interpolation="bilinear",
-                               aspect="auto")
+    im_artist = ax_img.imshow(dreams_fr[0][0], interpolation="bilinear", aspect="auto")
     title_img = ax_img.set_title("Frame imaginée  t=0", color=WHITE, fontsize=9)
 
-    # ── Courbes θ / ω ──────────────────────────────────────────────────────────
     ax_st.set_facecolor(DARK2)
     for sp in ax_st.spines.values(): sp.set_edgecolor(GRID)
     ax_st.tick_params(colors=DIM, labelsize=7)
     ax_st.grid(True, color=GRID, lw=0.4, alpha=0.7)
     ax_st.set_xlabel("t (frames)", color=DIM, fontsize=7)
 
-    t_ax = np.arange(n_steps + 1)
+    t_ax    = np.arange(n_steps + 1)
     states0 = predict_states(dreams_z[0], probe_mu, probe_sigma, probe_W)
 
     line_th, = ax_st.plot(t_ax, states0[:, 0], color="#4fc3f7", lw=1.3, label="θ estimé")
@@ -318,43 +389,32 @@ def run_explorer(bg_pc, S_bg,
     vline_th = ax_st.axvline(0, color="white", lw=1, ls="--", alpha=0.6)
     vline_om = ax_st2.axvline(0, color="white", lw=1, ls="--", alpha=0.6)
 
-    # Légende combinée
     handles = [line_th, line_om]
     labels  = [l.get_label() for l in handles]
     ax_st.legend(handles, labels, facecolor="#1e1e1e", labelcolor=WHITE,
                  edgecolor=GRID, fontsize=7, loc="upper right")
 
-    # Annotation valeurs courantes
     txt_states = fig.text(0.73, 0.915, "", color=WHITE, fontsize=8.5,
                           fontfamily="monospace")
-
-    # ── Mise à jour ────────────────────────────────────────────────────────────
 
     _state = {"ep": 0, "t": 0}
 
     def _refresh():
         ep = _state["ep"]
         t  = _state["t"]
-
-        pc    = dreams_pc[ep]        # (n_steps+1, 3)
-        z_tr  = dreams_z[ep]         # (n_steps+1, D)
-        fr    = dreams_fr[ep]        # (n_steps+1, H, W, 3)
+        pc     = dreams_pc[ep]
+        z_tr   = dreams_z[ep]
+        fr     = dreams_fr[ep]
         states = predict_states(z_tr, probe_mu, probe_sigma, probe_W)
 
-        # Couleur θ pour les points du rêve
-        theta_colors = states[:, 0]
-
-        # 3D — trajectoire rêve
         dream_line.set_data_3d(pc[:, 0], pc[:, 1], pc[:, 2])
         dream_scatter._offsets3d = (pc[:, 0], pc[:, 1], pc[:, 2])
-        dream_scatter.set_array(theta_colors)
+        dream_scatter.set_array(states[:, 0])
         dream_dot._offsets3d = ([pc[t, 0]], [pc[t, 1]], [pc[t, 2]])
 
-        # Image
         im_artist.set_data(fr[t])
         title_img.set_text(f"Frame imaginée   t={t}")
 
-        # Courbes
         line_th.set_ydata(states[:, 0])
         line_om.set_ydata(states[:, 1])
         ax_st.set_ylim(states[:, 0].min() - 0.3, states[:, 0].max() + 0.3)
@@ -362,11 +422,9 @@ def run_explorer(bg_pc, S_bg,
         vline_th.set_xdata([t])
         vline_om.set_xdata([t])
 
-        # Annotation
         th_val = states[t, 0]
         om_val = states[t, 1]
         txt_states.set_text(f"θ = {th_val:+.3f} rad\nω = {om_val:+.3f} rad/s")
-
         fig.canvas.draw_idle()
 
     def on_episode(val):
@@ -382,13 +440,12 @@ def run_explorer(bg_pc, S_bg,
     sl_ep.on_changed(on_episode)
     sl_t.on_changed(on_time)
 
-    # ── Play / Pause ───────────────────────────────────────────────────────────
     _play = {"running": False, "timer": None}
 
     def _tick():
         t_next = (_state["t"] + 1) % (n_steps + 1)
         _state["t"] = t_next
-        sl_t.set_val(t_next)   # déclenche on_time → _refresh
+        sl_t.set_val(t_next)
 
     def on_play(event):
         if _play["running"]:
@@ -404,20 +461,23 @@ def run_explorer(bg_pc, S_bg,
         fig.canvas.draw_idle()
 
     btn.on_clicked(on_play)
-
     _refresh()
 
-    # Instructions
     fig.text(0.04, 0.005,
              "← → sliders épisode / temps  |  clic+drag sur la figure 3D pour pivoter",
              color=DIM, fontsize=7)
-
     plt.show()
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main(args):
+    save_mode = bool(args.save_gif)
+    if save_mode:
+        matplotlib.use("Agg")
+    else:
+        matplotlib.use("TkAgg")
+
     device = (torch.device("mps")  if torch.backends.mps.is_available()  else
               torch.device("cuda") if torch.cuda.is_available()           else
               torch.device("cpu"))
@@ -430,6 +490,8 @@ def main(args):
         model, decoder, model_name, model_color = load_rec(
             args.rec_ckpt, device)
 
+    traj_idx = args.traj_idx if args.traj_idx >= 0 else None
+
     (bg_pc, S_bg,
      dreams_z, dreams_pc, dreams_fr,
      Vt3, mu, var) = precompute(
@@ -439,33 +501,21 @@ def main(args):
         n_steps=args.n_steps,
         seed_frames=2,
         seq_len=args.seq_len,
+        traj_idx=traj_idx,
     )
 
-    # Toutes les trajectoires de fond concaténées pour le probe
-    all_bg_z = np.concatenate([
-        model.encode(
-            torch.from_numpy(
-                np.load(f)[None].astype(np.float32)
-            ).to(device)
-        ).squeeze(0).cpu().numpy()
-        for f in []    # probe fitted on bg_pc back-projected
-    ], axis=0) if False else None
-
-    # Probe fitté sur les z de fond (back-projeter depuis PCA n'est pas utile,
-    # on refit sur les z bruts stockés dans dreams_z + bg encodings)
-    # On réutilise les z réels encodés pour fitter le probe
-    print("\n  Fitting probe linéaire z → (θ, ω)…")
-    # Re-encoder le fond pour avoir les z bruts
+    # Probe linéaire z → (θ, ω) fitté sur les z du fond
+    print("\n  Fitting probe linéaire…")
     ds = PendulumSeqDataset(args.dataset_dir, seq_len=args.seq_len)
-    raw_z_list, raw_s_list = [], []
+    raw_z, raw_s = [], []
     with torch.no_grad():
         for i in range(min(args.n_episodes, len(ds))):
             frames, states = ds[i]
             z = model.encode(frames.unsqueeze(0).to(device))[0].cpu().numpy()
-            raw_z_list.append(z)
-            raw_s_list.append(states.numpy())
-    Z_raw = np.concatenate(raw_z_list, axis=0)
-    S_raw = np.concatenate(raw_s_list, axis=0)
+            raw_z.append(z)
+            raw_s.append(states.numpy())
+    Z_raw = np.concatenate(raw_z, axis=0)
+    S_raw = np.concatenate(raw_s, axis=0)
     probe_mu, probe_sigma, probe_W = fit_state_probe(Z_raw, S_raw)
     print("  Probe prêt.")
 
@@ -473,13 +523,23 @@ def main(args):
     if decoder is not None:
         del decoder
 
-    run_explorer(
-        bg_pc, S_bg,
-        dreams_z, dreams_pc, dreams_fr,
-        var, model_color, model_name,
-        probe_mu, probe_sigma, probe_W,
-        n_steps=args.n_steps,
-    )
+    if save_mode:
+        save_gif(
+            bg_pc, S_bg,
+            dreams_pc[0], dreams_z[0], dreams_fr[0],
+            var, model_color, model_name,
+            probe_mu, probe_sigma, probe_W,
+            out_path=args.save_gif,
+            fps=args.fps,
+        )
+    else:
+        run_explorer(
+            bg_pc, S_bg,
+            dreams_z, dreams_pc, dreams_fr,
+            var, model_color, model_name,
+            probe_mu, probe_sigma, probe_W,
+            n_steps=args.n_steps,
+        )
 
 
 if __name__ == "__main__":
@@ -490,9 +550,12 @@ if __name__ == "__main__":
     p.add_argument("--rec-ckpt",     default="checkpoints/rec/lewm_rec_best.pt")
     p.add_argument("--dataset-dir",  default="dataset/pendulum")
     p.add_argument("--n-episodes",   type=int, default=20,
-                   help="Nombre d'épisodes préchargés")
-    p.add_argument("--n-steps",      type=int, default=100,
-                   help="Longueur du rêve (pas predictor)")
-    p.add_argument("--seq-len",      type=int, default=100,
-                   help="Fenêtre d'encodage des trajectoires de fond")
+                   help="Trajectoires pour le fond PCA")
+    p.add_argument("--traj-idx",     type=int, default=-1,
+                   help="Épisode à rêver (-1 = tous les n_episodes)")
+    p.add_argument("--n-steps",      type=int, default=100)
+    p.add_argument("--seq-len",      type=int, default=100)
+    p.add_argument("--save-gif",     default=None,
+                   help="Chemin GIF export (désactive le viewer interactif)")
+    p.add_argument("--fps",          type=int, default=12)
     main(p.parse_args())

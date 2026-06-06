@@ -377,7 +377,8 @@ def _plot_sweep(results: list[dict], model_type: str, ckpt_dir: str):
 
 def run_compare(jepa_ckpt: str, rec_ckpt: str, dataset_dir: str,
                 label_frac: float, probe_epochs: int, probe_lr: float,
-                probe_bs: int, device, plot: bool, seed: int = 42):
+                probe_bs: int, device, plot: bool, seed: int = 42,
+                save: str = "visuals/probe_compare.png"):
 
     print("─" * 55)
     print("JEPA")
@@ -415,52 +416,72 @@ def run_compare(jepa_ckpt: str, rec_ckpt: str, dataset_dir: str,
     print("═" * 65)
 
     if plot:
-        _plot_compare(r_jepa, r_rec)
+        _plot_compare(r_jepa, r_rec, save=save)
 
 
-def _plot_compare(r_jepa: dict, r_rec: dict):
+def _plot_compare(r_jepa: dict, r_rec: dict, save: str = "visuals/probe_compare.png"):
     try:
+        import matplotlib
         import matplotlib.pyplot as plt
     except ImportError:
         return
 
-    DARK = "#111"
-    metrics = ["R²(θ)", "R²(ω)", "R²(mean)"]
+    DARK = "#0e0e0e"
+    DARK2 = "#161616"
+    GRID  = "#282828"
+    WHITE = "#e4e4e4"
+    DIM   = "#555555"
+    C_JEPA = "#4fc3f7"
+    C_REC  = "#ff8a65"
+
+    metrics  = ["R²(θ)", "R²(ω)", "R²(mean)"]
     keys_lin = ["r2_theta",     "r2_omega",     "r2_mean"]
     keys_mlp = ["mlp_r2_theta", "mlp_r2_omega", "mlp_r2_mean"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True, facecolor=DARK)
     fig.patch.set_facecolor(DARK)
     titles = ["Probe LINÉAIRE", "Probe MLP (2×256)"]
+    key_sets = [keys_lin, keys_mlp]
 
-    for ax, title, k_lin, k_mlp in [
-        (axes[0], titles[0], keys_lin, keys_lin),
-        (axes[1], titles[1], keys_mlp, keys_mlp),
-    ]:
-        ax.set_facecolor(DARK)
-        x = np.arange(len(metrics))
-        width = 0.35
-        vals_j = [r_jepa[k] for k in (k_lin if title == titles[0] else k_mlp)]
-        vals_r = [r_rec[k]  for k in (k_lin if title == titles[0] else k_mlp)]
-
-        ax.bar(x - width/2, vals_j, width, label="JEPA",     color="#4fc3f7", alpha=0.85)
-        ax.bar(x + width/2, vals_r, width, label="AE (Rec)", color="#ff8a65", alpha=0.85)
-        ax.set_xticks(x)
-        ax.set_xticklabels(metrics, color="white")
-        ax.set_ylabel("R²", color="white")
-        ax.set_ylim(0, 1.08)
-        ax.set_title(title, color="white")
-        ax.legend(facecolor="#222", labelcolor="white", edgecolor="#444")
-        ax.tick_params(colors="white")
-        ax.axhline(1.0, color="#555", ls=":", lw=1)
+    for ax, title, keys in zip(axes, titles, key_sets):
+        ax.set_facecolor(DARK2)
         for sp in ax.spines.values():
-            sp.set_edgecolor("#444")
+            sp.set_edgecolor(GRID)
+        ax.tick_params(colors=DIM)
 
-    fig.suptitle("Probe z → (θ, ω) — JEPA vs AE", color="white", fontsize=13)
+        x     = np.arange(len(metrics))
+        width = 0.32
+        vals_j = [r_jepa[k] for k in keys]
+        vals_r = [r_rec[k]  for k in keys]
+
+        bars_j = ax.bar(x - width / 2, vals_j, width, label="JEPA", color=C_JEPA, alpha=0.85)
+        bars_r = ax.bar(x + width / 2, vals_r, width, label="AE",   color=C_REC,  alpha=0.85)
+
+        for bar in list(bars_j) + list(bars_r):
+            h = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.01,
+                    f"{h:.3f}", ha="center", va="bottom", color=WHITE, fontsize=7.5)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, color=WHITE, fontsize=9)
+        ax.set_ylabel("R²", color=DIM)
+        ax.set_ylim(0, 1.15)
+        ax.set_title(title, color=WHITE, fontsize=10)
+        ax.legend(facecolor="#1e1e1e", labelcolor=WHITE, edgecolor=GRID, fontsize=9)
+        ax.axhline(1.0, color=DIM, ls=":", lw=1)
+
+    fig.suptitle("Probe z → (θ, ω)  ·  JEPA vs AE", color=WHITE, fontsize=12)
     plt.tight_layout()
-    plt.savefig("visuals/probe_compare.png", dpi=120, bbox_inches="tight", facecolor=DARK)
-    plt.show()
-    print("Plot sauvegardé : visuals/probe_compare.png")
+
+    from pathlib import Path
+    Path(save).parent.mkdir(parents=True, exist_ok=True)
+    if save:
+        matplotlib.use("Agg") if not plt.get_backend().startswith("agg") else None
+        fig.savefig(save, dpi=150, bbox_inches="tight", facecolor=DARK)
+        print(f"Plot sauvegardé : {save}")
+    else:
+        plt.show()
+    plt.close(fig)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -497,6 +518,8 @@ def main():
 
     # Misc
     parser.add_argument("--plot",           action="store_true")
+    parser.add_argument("--save",           default="visuals/probe_compare.png",
+                        help="Chemin PNG pour le plot compare (avec --compare --plot)")
     parser.add_argument("--seed",           type=int,   default=42)
 
     args = parser.parse_args()
@@ -510,6 +533,7 @@ def main():
             args.dataset_dir, args.label_frac,
             args.probe_epochs, args.probe_lr, args.probe_bs,
             device, args.plot, args.seed,
+            save=args.save,
         )
 
     elif args.checkpoint_dir:
