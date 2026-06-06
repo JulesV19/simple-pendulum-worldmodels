@@ -40,6 +40,8 @@ python3 tools/visualize_latent_3d.py --model both --color omega --save visuals/l
 
 ## Résultats (probe linéaire z → θ, ω — val set)
 
+> Les deux modèles ne sont pas strictement comparables : l'AE entraîne encodeur et décodeur conjointement avec VGG16 comme signal de supervision, tandis que le décodeur JEPA est entraîné séparément sur un encodeur gelé. Les gradients reçus par l'encodeur, leur nature et leur quantité diffèrent structurellement.
+
 ```
                     JEPA      AE
 R²(θ)             0.966     0.976
