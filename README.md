@@ -28,7 +28,7 @@ python3 rec/imagine.py  --gif --traj-idx 0 --n-steps 120 --fps 15 --out visuals/
 
 ## Dream Explorer — espace latent + rêve
 
-Trajectoire dans l'espace latent R³ (PCA sur 20 trajectoires réelles) animée simultanément avec la frame décodée. La traîne colorée montre les derniers pas du rêve.
+Trajectoire dans l'espace latent R³ (PCA sur 20 trajectoires réelles) animée simultanément avec la frame décodée.
 
 | JEPA | AE |
 |:---:|:---:|
